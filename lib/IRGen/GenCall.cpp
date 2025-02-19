@@ -20,6 +20,7 @@
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/GenericEnvironment.h"
+#include "swift/AST/PrettyStackTrace.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/IRGen/Linking.h"
 #include "swift/Runtime/Config.h"
@@ -82,12 +83,10 @@ static Size getCoroutineContextSize(IRGenModule &IGM,
   case SILCoroutineKind::None:
     llvm_unreachable("expand a coroutine");
   case SILCoroutineKind::YieldOnce2:
-    if (IGM.IRGen.Opts.EmitYieldOnce2AsYieldOnce) {
-      LLVM_FALLTHROUGH;
-    } else {
+    if (!IGM.IRGen.Opts.EmitYieldOnce2AsYieldOnce)
       llvm::report_fatal_error(
           "callee allocated coroutines do not have fixed-size buffers");
-    }
+    LLVM_FALLTHROUGH;
   case SILCoroutineKind::YieldOnce:
     return getYieldOnceCoroutineBufferSize(IGM);
   case SILCoroutineKind::YieldMany:
@@ -1473,6 +1472,8 @@ static bool doesClangExpansionMatchSchema(IRGenModule &IGM,
 /// Expand the result and parameter types to the appropriate LLVM IR
 /// types for C, C++ and Objective-C signatures.
 void SignatureExpansion::expandExternalSignatureTypes() {
+  PrettyStackTraceType entry(IGM.Context, "using clang to expand signature for",
+                             FnType);
   assert(FnType->getLanguage() == SILFunctionLanguage::C);
 
   auto SILResultTy = [&]() {
@@ -1909,11 +1910,9 @@ void SignatureExpansion::expandParameters(
   case SILCoroutineKind::None:
     break;
   case SILCoroutineKind::YieldOnce2:
-    if (IGM.IRGen.Opts.EmitYieldOnce2AsYieldOnce) {
-      LLVM_FALLTHROUGH;
-    } else {
+    if (!IGM.IRGen.Opts.EmitYieldOnce2AsYieldOnce)
       break;
-    }
+    LLVM_FALLTHROUGH;
 
   case SILCoroutineKind::YieldOnce:
   case SILCoroutineKind::YieldMany:
@@ -2717,12 +2716,9 @@ public:
     // Pass along the coroutine buffer.
     switch (origCalleeType->getCoroutineKind()) {
     case SILCoroutineKind::YieldOnce2:
-      if (IGF.IGM.IRGen.Opts.EmitYieldOnce2AsYieldOnce) {
-        LLVM_FALLTHROUGH;
-      } else {
+      if (!IGF.IGM.IRGen.Opts.EmitYieldOnce2AsYieldOnce)
         llvm::report_fatal_error("unimplemented");
-        break;
-      }
+      LLVM_FALLTHROUGH;
     case SILCoroutineKind::YieldOnce:
     case SILCoroutineKind::YieldMany:
       original.transferInto(adjusted, 1);
@@ -3027,11 +3023,7 @@ public:
 
         if (nativeSchema.requiresIndirect() ||
             errorSchema.shouldReturnTypedErrorIndirectly() ||
-            (errorSchema.empty() &&
-             fnConv.hasIndirectSILResults())) { // direct empty typed errors are
-                                                // passed
-          // indirectly for compatibility with generic
-          // functions.
+            fnConv.hasIndirectSILResults()) {
           // Return the error indirectly.
           auto buf = IGF.getCalleeTypedErrorResultSlot(silErrorTy);
           Args[--LastArgWritten] = buf.getAddress();
@@ -4542,8 +4534,8 @@ void CallEmission::emitToUnmappedExplosionWithDirectTypedError(
 
   Explosion errorExplosion;
   if (!errorSchema.empty()) {
-    if (auto *structTy =
-            dyn_cast<llvm::StructType>(errorSchema.getExpandedType(IGF.IGM))) {
+    auto *expandedType = errorSchema.getExpandedType(IGF.IGM);
+    if (auto *structTy = dyn_cast<llvm::StructType>(expandedType)) {
       for (unsigned i = 0, e = structTy->getNumElements(); i < e; ++i) {
         llvm::Value *elt = values[combined.errorValueMapping[i]];
         auto *nativeTy = structTy->getElementType(i);
@@ -4553,7 +4545,7 @@ void CallEmission::emitToUnmappedExplosionWithDirectTypedError(
     } else {
       auto *converted =
           convertForDirectError(IGF, values[combined.errorValueMapping[0]],
-                                combined.combinedTy, /*forExtraction*/ true);
+                                expandedType, /*forExtraction*/ true);
       errorExplosion.add(converted);
     }
 
@@ -4566,8 +4558,8 @@ void CallEmission::emitToUnmappedExplosionWithDirectTypedError(
   // If the regular result type is void, there is nothing to explode
   if (!nativeSchema.empty()) {
     Explosion resultExplosion;
-    if (auto *structTy =
-            dyn_cast<llvm::StructType>(nativeSchema.getExpandedType(IGF.IGM))) {
+    auto *expandedType = nativeSchema.getExpandedType(IGF.IGM);
+    if (auto *structTy = dyn_cast<llvm::StructType>(expandedType)) {
       for (unsigned i = 0, e = structTy->getNumElements(); i < e; ++i) {
         auto *nativeTy = structTy->getElementType(i);
         auto *converted = convertForDirectError(IGF, values[i], nativeTy,
@@ -4575,8 +4567,8 @@ void CallEmission::emitToUnmappedExplosionWithDirectTypedError(
         resultExplosion.add(converted);
       }
     } else {
-      auto *converted = convertForDirectError(
-          IGF, values[0], combined.combinedTy, /*forExtraction*/ true);
+      auto *converted = convertForDirectError(IGF, values[0], expandedType,
+                                              /*forExtraction*/ true);
       resultExplosion.add(converted);
     }
     out = nativeSchema.mapFromNative(IGF.IGM, IGF, resultExplosion, resultType);
@@ -4811,12 +4803,10 @@ irgen::getCoroutineResumeFunctionPointerAuth(IRGenModule &IGM,
     return { IGM.getOptions().PointerAuth.YieldManyResumeFunctions,
              PointerAuthEntity::forYieldTypes(fnType) };
   case SILCoroutineKind::YieldOnce2:
-    if (IGM.IRGen.Opts.EmitYieldOnce2AsYieldOnce) {
-      LLVM_FALLTHROUGH;
-    } else {
+    if (!IGM.IRGen.Opts.EmitYieldOnce2AsYieldOnce)
       return {IGM.getOptions().PointerAuth.YieldOnce2ResumeFunctions,
               PointerAuthEntity::forYieldTypes(fnType)};
-    }
+    LLVM_FALLTHROUGH;
   case SILCoroutineKind::YieldOnce:
     return { IGM.getOptions().PointerAuth.YieldOnceResumeFunctions,
              PointerAuthEntity::forYieldTypes(fnType) };
@@ -6630,7 +6620,7 @@ llvm::FunctionType *FunctionPointer::getFunctionType() const {
   }
 
   // Read the function type off the global or else from the Signature.
-  if (auto *constant = dyn_cast<llvm::Constant>(Value)) {
+  if (isa<llvm::Constant>(Value)) {
     auto *gv = dyn_cast<llvm::GlobalValue>(Value);
     if (!gv) {
       return Sig.getType();

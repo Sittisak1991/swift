@@ -224,9 +224,8 @@ public func registerSILClasses() {
   register(ObjCSuperMethodInst.self)
   register(WitnessMethodInst.self)
   register(IsUniqueInst.self)
-  register(IsEscapingClosureInst.self)
+  register(DestroyNotEscapedClosureInst.self)
   register(AllocStackInst.self)
-  register(AllocVectorInst.self)
   register(AllocPackInst.self)
   register(AllocPackMetadataInst.self)
   register(AllocRefInst.self)
@@ -258,4 +257,5 @@ public func registerSILClasses() {
   register(CheckedCastAddrBranchInst.self)
   register(ThunkInst.self)
   register(MergeIsolationRegionInst.self)
+  register(IgnoredUseInst.self)
 }

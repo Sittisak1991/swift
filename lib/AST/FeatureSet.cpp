@@ -193,12 +193,10 @@ static bool usesFeatureNonescapableTypes(Decl *decl) {
 
 UNINTERESTING_FEATURE(StaticExclusiveOnly)
 UNINTERESTING_FEATURE(ExtractConstantsFromMembers)
-UNINTERESTING_FEATURE(FixedArrays)
 UNINTERESTING_FEATURE(GroupActorErrors)
 UNINTERESTING_FEATURE(SameElementRequirements)
 UNINTERESTING_FEATURE(UnspecifiedMeansMainActorIsolated)
 UNINTERESTING_FEATURE(GenerateForceToMainActorThunks)
-UNINTERESTING_FEATURE(Span)
 
 static bool usesFeatureSendingArgsAndResults(Decl *decl) {
   auto isFunctionTypeWithSending = [](Type type) {
@@ -254,13 +252,15 @@ static bool usesFeatureLifetimeDependence(Decl *decl) {
   if (decl->getAttrs().hasAttribute<LifetimeAttr>()) {
     return true;
   }
-  auto *afd = dyn_cast<AbstractFunctionDecl>(decl);
-  if (!afd) {
-    return false;
-  }
-  return afd->getInterfaceType()
+  if (auto *afd = dyn_cast<AbstractFunctionDecl>(decl)) {
+    return afd->getInterfaceType()
       ->getAs<AnyFunctionType>()
       ->hasLifetimeDependencies();
+  }
+  if (auto *varDecl = dyn_cast<VarDecl>(decl)) {
+    return !varDecl->getTypeInContext()->isEscapable();
+  }
+  return false;
 }
 
 UNINTERESTING_FEATURE(DynamicActorIsolation)
@@ -268,6 +268,7 @@ UNINTERESTING_FEATURE(NonfrozenEnumExhaustivity)
 UNINTERESTING_FEATURE(ClosureIsolation)
 UNINTERESTING_FEATURE(Extern)
 UNINTERESTING_FEATURE(ConsumeSelfInDeinit)
+UNINTERESTING_FEATURE(StrictSendableMetatypes)
 
 static bool usesFeatureBitwiseCopyable2(Decl *decl) {
   if (!decl->getModuleContext()->isStdlibModule()) {
@@ -347,7 +348,6 @@ static bool usesFeatureABIAttribute(Decl *decl) {
 }
 
 UNINTERESTING_FEATURE(WarnUnsafe)
-UNINTERESTING_FEATURE(SafeInterop)
 UNINTERESTING_FEATURE(SafeInteropWrappers)
 UNINTERESTING_FEATURE(AssumeResilientCxxTypes)
 UNINTERESTING_FEATURE(CoroutineAccessorsUnwindOnCallerError)
@@ -403,6 +403,17 @@ static bool usesFeatureCoroutineAccessors(Decl *decl) {
   default:
     return false;
   }
+}
+
+static bool usesFeatureCustomAvailability(Decl *decl) {
+  // FIXME: [availability] Check whether @available attributes for custom
+  // domains are attached to the decl.
+  return false;
+}
+
+static bool usesFeatureBuiltinEmplaceTypedThrows(Decl *decl) {
+  // Callers of 'Builtin.emplace' should explicitly guard the usage with #if.
+  return false;
 }
 
 // ----------------------------------------------------------------------------

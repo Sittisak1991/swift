@@ -655,19 +655,29 @@ namespace {
       return visitAbstractTypeParamType(type, origType, isSensitive);
     }
 
-    Type getConcreteReferenceStorageReferent(Type type,
+    Type getConcreteReferenceStorageReferent(Type substType,
                                              AbstractionPattern origType) {
-      if (type->isTypeParameter()) {
-        auto genericSig = origType.getGenericSignature();
-        if (auto concreteType = genericSig->getConcreteType(type))
-          return concreteType;
-        if (auto superclassType = genericSig->getSuperclassBound(type))
-          return superclassType;
-        assert(genericSig->requiresClass(type));
+      substType = substType->getReferenceStorageReferent();
+      origType = origType.getReferenceStorageReferentType();
+
+      if (auto objectType = substType->getOptionalObjectType()) {
+        substType = objectType;
+        origType = origType.getOptionalObjectType();
+      }
+
+      if (substType->isTypeParameter()) {
+        if (auto genericSig = origType.getGenericSignature()) {
+          auto type = origType.getType();
+          if (auto concreteType = genericSig->getConcreteType(type))
+            return concreteType;
+          if (auto superclassType = genericSig->getSuperclassBound(type))
+            return superclassType;
+          assert(genericSig->requiresClass(type));
+        }
         return TC.Context.getAnyObjectType();
       }
 
-      return type;
+      return substType;
     }
 
 #define NEVER_LOADABLE_CHECKED_REF_STORAGE(Name, ...) \
@@ -710,9 +720,7 @@ namespace {
     RetTy visit##Name##StorageType(Can##Name##StorageType type, \
                                    AbstractionPattern origType, \
                                    IsTypeExpansionSensitive_t isSensitive) { \
-      auto referentType = \
-        type->getReferentType()->lookThroughSingleOptionalType(); \
-      auto concreteType = getConcreteReferenceStorageReferent(referentType, origType); \
+      auto concreteType = getConcreteReferenceStorageReferent(type, origType); \
       if (Name##StorageType::get(concreteType, TC.Context) \
             ->isLoadable(Expansion.getResilienceExpansion())) { \
         return asImpl().visitLoadable##Name##StorageType(type, origType, \
@@ -2454,13 +2462,8 @@ namespace {
         // The same should happen if the type was resilient and serialized in
         // another module in the same package with package-cmo enabled, which
         // treats those modules to be in the same resilience domain.
-        auto declModule = D->getModuleContext();
-        bool sameModule = (declModule == &TC.M);
-        bool serializedPackage = declModule != &TC.M &&
-                                 declModule->inSamePackage(&TC.M) &&
-                                 declModule->isResilient() &&
-                                 declModule->serializePackageEnabled();
-        auto inSameResilienceDomain = sameModule || serializedPackage;
+        auto inSameResilienceDomain = D->getModuleContext() == &TC.M ||
+                                      D->bypassResilienceInPackage(&TC.M);
         if (inSameResilienceDomain)
           properties.addSubobject(RecursiveProperties::forResilient());
 
@@ -4422,6 +4425,10 @@ TypeConverter::getLoweredLocalCaptures(SILDeclRef fn) {
   // Captured pack element environments.
   llvm::SetVector<GenericEnvironment *> genericEnv;
 
+  // Captured types.
+  SmallVector<CapturedType, 4> capturedTypes;
+  llvm::SmallDenseSet<CanType, 4> alreadyCapturedTypes;
+
   bool capturesGenericParams = false;
   DynamicSelfType *capturesDynamicSelf = nullptr;
   OpaqueValueExpr *capturesOpaqueValue = nullptr;
@@ -4617,6 +4624,13 @@ TypeConverter::getLoweredLocalCaptures(SILDeclRef fn) {
       // Collect non-function captures.
       recordCapture(capture);
     }
+
+    for (const auto &capturedType : captureInfo.getCapturedTypes()) {
+      if (alreadyCapturedTypes.insert(capturedType.getType()->getCanonicalType())
+              .second) {
+        capturedTypes.push_back(capturedType);
+      }
+    }
   };
 
   collectFunctionCaptures = [&](AnyFunctionRef curFn) {
@@ -4694,7 +4708,8 @@ TypeConverter::getLoweredLocalCaptures(SILDeclRef fn) {
   // Cache the result.
   CaptureInfo info(Context, resultingCaptures,
                    capturesDynamicSelf, capturesOpaqueValue,
-                   capturesGenericParams, genericEnv.getArrayRef());
+                   capturesGenericParams, genericEnv.getArrayRef(),
+                   capturedTypes);
   auto inserted = LoweredCaptures.insert({fn, info});
   assert(inserted.second && "already in map?!");
   (void)inserted;

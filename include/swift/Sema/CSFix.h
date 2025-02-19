@@ -483,6 +483,10 @@ enum class FixKind : uint8_t {
   /// sending result, but is passed a function typed parameter without a sending
   /// result.
   AllowSendingMismatch,
+
+  /// Ignore when an 'InlineArray' literal has mismatched number of elements to
+  /// the type it's attempting to bind to.
+  AllowInlineArrayLiteralCountMismatch,
 };
 
 class ConstraintFix {
@@ -3834,6 +3838,30 @@ public:
 
   static bool classof(const ConstraintFix *fix) {
     return fix->getKind() == FixKind::IgnoreKeyPathSubscriptIndexMismatch;
+  }
+};
+
+class AllowInlineArrayLiteralCountMismatch final : public ConstraintFix {
+  Type lhsCount, rhsCount;
+
+  AllowInlineArrayLiteralCountMismatch(ConstraintSystem &cs, Type lhsCount,
+                                Type rhsCount, ConstraintLocator *locator)
+      : ConstraintFix(cs, FixKind::AllowInlineArrayLiteralCountMismatch, locator),
+        lhsCount(lhsCount), rhsCount(rhsCount) {}
+
+public:
+  std::string getName() const override {
+    return "allow vector literal count mismatch";
+  }
+
+  bool diagnose(const Solution &solution, bool asNote = false) const override;
+
+  static AllowInlineArrayLiteralCountMismatch *
+  create(ConstraintSystem &cs, Type lhsCount, Type rhsCount,
+         ConstraintLocator *locator);
+
+  static bool classof(const ConstraintFix *fix) {
+    return fix->getKind() == FixKind::AllowInlineArrayLiteralCountMismatch;
   }
 };
 
