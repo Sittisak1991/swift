@@ -792,12 +792,6 @@ public:
     return getRecursiveProperties().hasOpaqueArchetype();
   }
 
-  /// Determine whether the type is an opened existential type.
-  ///
-  /// To determine whether there is an opened existential type
-  /// anywhere in the type, use \c hasOpenedExistential.
-  bool isOpenedExistential() const;
-
   /// Determine whether the type is an opened existential type with Error inside
   bool isOpenedExistentialWithError();
 
@@ -2824,7 +2818,7 @@ public:
 
   /// Retrieve the set of generic arguments provided at this level.
   ArrayRef<Type> getGenericArgs() const {
-    return {getTrailingObjectsPointer(), Bits.BoundGenericType.GenericArgCount};
+    return {getTrailingObjectsPointer(), static_cast<size_t>(Bits.BoundGenericType.GenericArgCount)};
   }
 
   SmallVector<Type, 2> getExpandedGenericArgs();
@@ -4842,12 +4836,12 @@ public:
   SILType getSILStorageInterfaceType() const;
   /// Return a version of this result info with the type replaced.
   SILResultInfo getWithInterfaceType(CanType type) const {
-    return SILResultInfo(type, getConvention());
+    return SILResultInfo(type, getConvention(), getOptions());
   }
 
   /// Return a version of this result info with the convention replaced.
   SILResultInfo getWithConvention(ResultConvention c) const {
-    return SILResultInfo(getInterfaceType(), c);
+    return SILResultInfo(getInterfaceType(), c, getOptions());
   }
 
   // Does this result convention require indirect storage? This reflects a
@@ -6365,7 +6359,7 @@ public:
   /// a protocol composition type; you also have to look at
   /// hasExplicitAnyObject().
   ArrayRef<Type> getMembers() const {
-    return {getTrailingObjects<Type>(), Bits.ProtocolCompositionType.Count};
+    return {getTrailingObjects<Type>(), static_cast<size_t>(Bits.ProtocolCompositionType.Count)};
   }
 
   InvertibleProtocolSet getInverses() const { return Inverses; }
@@ -6463,7 +6457,7 @@ public:
 
   ArrayRef<Type> getArgs() const {
     return {getTrailingObjects<Type>(),
-            Bits.ParameterizedProtocolType.ArgCount};
+            static_cast<size_t>(Bits.ParameterizedProtocolType.ArgCount)};
   }
 
   bool requiresClass() const {
@@ -7246,7 +7240,7 @@ public:
   /// Returns \c true if this type parameter is declared as a value.
   ///
   /// \code
-  /// struct Vector<Element, let N: Int>
+  /// struct InlineArray<let count: Int, Element: ~Copyable>
   /// \endcode
   bool isValue() const {
     return ParamKind == GenericTypeParamKind::Value;
@@ -7513,7 +7507,7 @@ public:
   static Type get(const ASTContext &ctx, ArrayRef<Type> terms);
 
   ArrayRef<Type> getTerms() const {
-    return { getTrailingObjects<Type>(), Bits.ErrorUnionType.NumTerms };
+    return { getTrailingObjects<Type>(), static_cast<size_t>(Bits.ErrorUnionType.NumTerms) };
   };
 
   // Support for FoldingSet.
@@ -7930,14 +7924,6 @@ inline bool TypeBase::isClassExistentialType() {
   if (auto existential = dyn_cast<ExistentialType>(T))
     return existential->requiresClass();
   return false;
-}
-
-inline bool TypeBase::isOpenedExistential() const {
-  if (!hasOpenedExistential())
-    return false;
-
-  CanType T = getCanonicalType();
-  return isa<OpenedArchetypeType>(T);
 }
 
 inline bool TypeBase::canDynamicallyBeOptionalType(bool includeExistential) {

@@ -33,6 +33,7 @@
 #include "llvm/Support/VersionTuple.h"
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace swift {
@@ -258,7 +259,7 @@ public:
   SmallVector<LinkLibrary, 4> LinkLibraries;
 
   /// The public dependent libraries specified on the command line.
-  std::vector<std::string> PublicLinkLibraries;
+  std::vector<std::tuple<std::string, bool>> PublicLinkLibraries;
 
   /// If non-empty, the (unmangled) name of a dummy symbol to emit that can be
   /// used to force-load this module.
@@ -294,6 +295,10 @@ public:
   /// (use DebugPrefixMap and CoveragePrefixMap for those) - currently just
   /// indexing info.
   PathRemapper FilePrefixMap;
+
+  /// Indicates whether or not the frontend should generate callsite information
+  /// in the debug info.
+  bool DebugCallsiteInfo = false;
 
   /// What level of debug info to generate.
   IRGenDebugInfoLevel DebugInfoLevel : 2;
@@ -371,6 +376,8 @@ public:
   /// Emit names of struct stored properties and enum cases.
   unsigned EnableReflectionNames : 1;
 
+  unsigned DisableLLVMMergeFunctions : 1;
+
   /// Emit mangled names of anonymous context descriptors.
   unsigned EnableAnonymousContextMangledNames : 1;
 
@@ -383,6 +390,7 @@ public:
   unsigned LazyInitializeClassMetadata : 1;
   unsigned LazyInitializeProtocolConformances : 1;
   unsigned IndirectAsyncFunctionPointer : 1;
+  unsigned IndirectCoroFunctionPointer : 1;
 
   /// Use absolute function references instead of relative ones.
   /// Mainly used on WebAssembly, that doesn't support relative references
@@ -460,6 +468,8 @@ public:
   /// Internalize symbols (static library) - do not export any public symbols.
   unsigned InternalizeSymbols : 1;
 
+  unsigned MergeableSymbols : 1;
+
   /// Emit a section with references to class_ro_t* in generic class patterns.
   unsigned EmitGenericRODatas : 1;
 
@@ -484,6 +494,9 @@ public:
   unsigned EnableHotColdSplit : 1;
 
   unsigned EmitAsyncFramePushPopMetadata : 1;
+
+  // Whether to emit typed malloc during coroutine frame allocation.
+  unsigned EmitTypeMallocForCoroFrame : 1;
 
   // Whether to use the yield_once ABI when emitting yield_once_2 coroutines.
   unsigned EmitYieldOnce2AsYieldOnce : 1;
@@ -571,10 +584,11 @@ public:
         SwiftAsyncFramePointer(SwiftAsyncFramePointerKind::Auto),
         HasValueNamesSetting(false), ValueNames(false),
         ReflectionMetadata(ReflectionMetadataMode::Runtime),
-        EnableReflectionNames(true), EnableAnonymousContextMangledNames(false),
-        ForcePublicLinkage(false), LazyInitializeClassMetadata(false),
+        EnableReflectionNames(true), DisableLLVMMergeFunctions(false),
+        EnableAnonymousContextMangledNames(false), ForcePublicLinkage(false),
+        LazyInitializeClassMetadata(false),
         LazyInitializeProtocolConformances(false),
-        IndirectAsyncFunctionPointer(false),
+        IndirectAsyncFunctionPointer(false), IndirectCoroFunctionPointer(false),
         CompactAbsoluteFunctionPointer(false), DisableLegacyTypeInfo(false),
         PrespecializeGenericMetadata(false), UseIncrementalLLVMCodeGen(true),
         UseTypeLayoutValueHandling(true), ForceStructTypeLayouts(false),
@@ -589,14 +603,15 @@ public:
         EnableGlobalISel(false), VirtualFunctionElimination(false),
         WitnessMethodElimination(false), ConditionalRuntimeRecords(false),
         InternalizeAtLink(false), InternalizeSymbols(false),
-        EmitGenericRODatas(true), NoPreallocatedInstantiationCaches(false),
+        MergeableSymbols(false), EmitGenericRODatas(true),
+        NoPreallocatedInstantiationCaches(false),
         DisableReadonlyStaticObjects(false), CollocatedMetadataFunctions(false),
         ColocateTypeDescriptors(true), UseRelativeProtocolWitnessTables(false),
         UseFragileResilientProtocolWitnesses(false), EnableHotColdSplit(false),
-        EmitAsyncFramePushPopMetadata(true), EmitYieldOnce2AsYieldOnce(true),
-        AsyncFramePointerAll(false), UseProfilingMarkerThunks(false),
-        DebugInfoForProfiling(false), CmdArgs(),
-        SanitizeCoverage(llvm::SanitizerCoverageOptions()),
+        EmitAsyncFramePushPopMetadata(true), EmitTypeMallocForCoroFrame(false),
+        EmitYieldOnce2AsYieldOnce(true), AsyncFramePointerAll(false),
+        UseProfilingMarkerThunks(false), DebugInfoForProfiling(false),
+        CmdArgs(), SanitizeCoverage(llvm::SanitizerCoverageOptions()),
         TypeInfoFilter(TypeInfoDumpFilter::All),
         PlatformCCallingConvention(llvm::CallingConv::C), UseCASBackend(false),
         CASObjMode(llvm::CASBackendMode::Native) {

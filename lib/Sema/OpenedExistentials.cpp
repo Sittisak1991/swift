@@ -147,7 +147,7 @@ findGenericParameterReferencesRec(CanGenericSignature genericSig,
   }
 
   // Metatypes preserve variance.
-  if (auto metaTy = type->getAs<MetatypeType>()) {
+  if (auto metaTy = type->getAs<AnyMetatypeType>()) {
     return findGenericParameterReferencesRec(genericSig, origParam, openedParam,
                                              metaTy->getInstanceType(),
                                              position, canBeCovariantResult);
@@ -256,11 +256,22 @@ findGenericParameterReferencesRec(CanGenericSignature genericSig,
   if (auto *pack = type->getAs<PackType>()) {
     auto info = GenericParameterReferenceInfo();
 
-    for (auto arg : pack->getElementTypes()) {
-      info |= findGenericParameterReferencesRec(
-          genericSig, origParam, openedParam, arg,
-          TypePosition::Invariant, /*canBeCovariantResult=*/false);
-    }
+    // FIXME: Source compatibility remedy to allow existential opening in
+    // the following case:
+    // ```
+    // protocol P {}
+    // struct S<each T> {}
+    // func foo<T: P>(_: T, _: S<T>? = nil) {}
+    // let p: any P
+    // foo(p)
+    // ```
+    //
+    // for (auto arg : pack->getElementTypes()) {
+    //   info |= findGenericParameterReferencesRec(
+    //       genericSig, origParam, openedParam, arg,
+    //       TypePosition::Invariant, /*canBeCovariantResult=*/false);
+    // }
+    (void)pack;
 
     return info;
   }
@@ -272,10 +283,9 @@ findGenericParameterReferencesRec(CanGenericSignature genericSig,
         TypePosition::Invariant, /*canBeCovariantResult=*/false);
   }
 
-  // Specifically ignore parameterized protocols and existential
-  // metatypes because we can erase them to the upper bound.
-  if (type->is<ParameterizedProtocolType>() ||
-      type->is<ExistentialMetatypeType>()) {
+  // Specifically ignore parameterized protocols because we can erase them to
+  // the upper bound.
+  if (type->is<ParameterizedProtocolType>()) {
     return GenericParameterReferenceInfo();
   }
 

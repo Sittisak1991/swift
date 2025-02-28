@@ -58,7 +58,7 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 912; // @_addressableForDependencies
+const uint16_t SWIFTMODULE_VERSION_MINOR = 924; // ExtensibleEnums feature
 
 /// A standard hash seed used for all string hashes in a serialized module.
 ///
@@ -707,6 +707,7 @@ enum class FunctionTypeIsolation : uint8_t {
   Parameter,
   Erased,
   GlobalActorOffset, // Add this to the global actor type ID
+  NonIsolatedCaller,
 };
 using FunctionTypeIsolationField = TypeIDField;
 
@@ -973,6 +974,7 @@ namespace options_block {
     PUBLIC_MODULE_NAME,
     SWIFT_INTERFACE_COMPILER_VERSION,
     STRICT_MEMORY_SAFETY,
+    EXTENSIBLE_ENUMS,
   };
 
   using SDKPathLayout = BCRecordLayout<
@@ -1082,6 +1084,10 @@ namespace options_block {
     SWIFT_INTERFACE_COMPILER_VERSION,
     BCBlob // version tuple
   >;
+
+  using ExtensibleEnumsLayout = BCRecordLayout<
+    EXTENSIBLE_ENUMS
+  >;
 }
 
 /// The record types within the input block.
@@ -1126,6 +1132,7 @@ namespace input_block {
   using LinkLibraryLayout = BCRecordLayout<
     LINK_LIBRARY,
     LibraryKindField, // kind
+    BCFixed<1>, // static
     BCFixed<1>, // forced?
     BCBlob // library name
   >;
@@ -2282,14 +2289,9 @@ namespace decls_block {
                      BCFixed<1>,         // isImmortal
                      BCFixed<1>,         // hasInheritLifetimeParamIndices
                      BCFixed<1>,         // hasScopeLifetimeParamIndices
+                     BCFixed<1>,         // hasAddressableParamIndices
                      BCArray<BCFixed<1>> // concatenated param indices
                      >;
-
-  using SafeDeclAttrLayout = BCRecordLayout<
-    Safe_DECL_ATTR,
-    BCFixed<1>, // implicit flag
-    BCBlob      // message
-  >;
 
   using AbstractClosureExprLayout = BCRecordLayout<
     ABSTRACT_CLOSURE_EXPR_CONTEXT,
@@ -2359,6 +2361,11 @@ namespace decls_block {
   using ExclusivityDeclAttrLayout = BCRecordLayout<
     Optimize_DECL_ATTR,
     BCFixed<2>  // exclusivity mode
+  >;
+
+  using ExecutionDeclAttrLayout = BCRecordLayout<
+    Execution_DECL_ATTR,
+    BCFixed<1>  // execution behavior kind
   >;
 
   using ABIDeclAttrLayout = BCRecordLayout<

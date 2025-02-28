@@ -18,6 +18,7 @@
 #include "swift/Basic/LangOptions.h"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/Basic/Feature.h"
+#include "swift/Basic/FileTypes.h"
 #include "swift/Basic/Platform.h"
 #include "swift/Basic/PlaygroundOption.h"
 #include "swift/Basic/Range.h"
@@ -37,6 +38,7 @@ LangOptions::LangOptions() {
   Features.insert(Feature::FeatureName);
 #define UPCOMING_FEATURE(FeatureName, SENumber, Version)
 #define EXPERIMENTAL_FEATURE(FeatureName, AvailableInProd)
+#define OPTIONAL_LANGUAGE_FEATURE(FeatureName, SENumber, Description)
 #include "swift/Basic/Features.def"
 
   // Special case: remove macro support if the compiler wasn't built with a
@@ -100,6 +102,7 @@ static const SupportedConditionalValue SupportedConditionalCompilationArches[] =
   "powerpc64le",
   "s390x",
   "wasm32",
+  "riscv32",
   "riscv64",
   "avr"
 };
@@ -540,6 +543,9 @@ std::pair<bool, bool> LangOptions::setTarget(llvm::Triple triple) {
   case llvm::Triple::ArchType::wasm32:
     addPlatformConditionValue(PlatformConditionKind::Arch, "wasm32");
     break;
+  case llvm::Triple::ArchType::riscv32:
+    addPlatformConditionValue(PlatformConditionKind::Arch, "riscv32");
+    break;
   case llvm::Triple::ArchType::riscv64:
     addPlatformConditionValue(PlatformConditionKind::Arch, "riscv64");
     break;
@@ -631,6 +637,8 @@ bool swift::isFeatureAvailableInProduction(Feature feature) {
     return true;
 #define EXPERIMENTAL_FEATURE(FeatureName, AvailableInProd) \
   case Feature::FeatureName: return AvailableInProd;
+#define OPTIONAL_LANGUAGE_FEATURE(FeatureName, SENumber, Description) \
+  LANGUAGE_FEATURE(FeatureName, SENumber, Description)
 #include "swift/Basic/Features.def"
   }
   llvm_unreachable("covered switch");
@@ -650,6 +658,7 @@ std::optional<Feature> swift::getExperimentalFeature(llvm::StringRef name) {
 #define LANGUAGE_FEATURE(FeatureName, SENumber, Description)
 #define EXPERIMENTAL_FEATURE(FeatureName, AvailableInProd) \
                    .Case(#FeatureName, Feature::FeatureName)
+#define OPTIONAL_LANGUAGE_FEATURE(FeatureName, SENumber, Description)
 #include "swift/Basic/Features.def"
       .Default(std::nullopt);
 }
@@ -659,6 +668,7 @@ std::optional<unsigned> swift::getFeatureLanguageVersion(Feature feature) {
 #define LANGUAGE_FEATURE(FeatureName, SENumber, Description)
 #define UPCOMING_FEATURE(FeatureName, SENumber, Version) \
   case Feature::FeatureName: return Version;
+#define OPTIONAL_LANGUAGE_FEATURE(FeatureName, SENumber, Description)
 #include "swift/Basic/Features.def"
   default:
     return std::nullopt;
@@ -672,6 +682,8 @@ bool swift::includeInModuleInterface(Feature feature) {
     return true;
 #define EXPERIMENTAL_FEATURE_EXCLUDED_FROM_MODULE_INTERFACE(FeatureName, AvailableInProd) \
   case Feature::FeatureName: return false;
+#define OPTIONAL_LANGUAGE_FEATURE(FeatureName, SENumber, Description) \
+  LANGUAGE_FEATURE(FeatureName, SENumber, Description)
 #include "swift/Basic/Features.def"
   }
   llvm_unreachable("covered switch");
@@ -729,10 +741,11 @@ namespace {
         "-working-directory=",
         "-working-directory"};
 
-  constexpr std::array<std::string_view, 15>
+  constexpr std::array<std::string_view, 16>
       knownClangDependencyIgnorablePrefiexes = {"-I",
                                                 "-F",
                                                 "-fmodule-map-file=",
+                                                "-ffile-compilation-dir",
                                                 "-iquote",
                                                 "-idirafter",
                                                 "-iframeworkwithsysroot",
@@ -813,4 +826,15 @@ ClangImporterOptions::getReducedExtraArgsForSwiftModuleDependency() const {
   }
 
   return filtered_args;
+}
+
+std::string ClangImporterOptions::getPCHInputPath() const {
+  if (!BridgingHeaderPCH.empty())
+    return BridgingHeaderPCH;
+
+  if (llvm::sys::path::extension(BridgingHeader)
+          .ends_with(file_types::getExtension(file_types::TY_PCH)))
+    return BridgingHeader;
+
+  return {};
 }

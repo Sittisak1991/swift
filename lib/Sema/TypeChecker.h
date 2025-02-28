@@ -764,8 +764,7 @@ bool typeCheckPatternBinding(PatternBindingDecl *PBD, unsigned patternNumber,
 /// together.
 ///
 /// \returns true if a failure occurred.
-bool typeCheckForEachPreamble(DeclContext *dc, ForEachStmt *stmt,
-                              GenericEnvironment *packElementEnv);
+bool typeCheckForEachPreamble(DeclContext *dc, ForEachStmt *stmt);
 
 /// Compute the set of captures for the given closure.
 void computeCaptures(AbstractClosureExpr *ACE);
@@ -1010,6 +1009,9 @@ bool isAvailabilitySafeForConformance(
 AvailabilityContext
 availabilityAtLocation(SourceLoc loc, const DeclContext *DC,
                        const AvailabilityScope **MostRefined = nullptr);
+
+/// Returns the availability context of the signature of the given declaration.
+AvailabilityContext availabilityForDeclSignature(const Decl *decl);
 
 /// Returns an over-approximation of the range of operating system versions
 /// that could the passed-in location could be executing upon for

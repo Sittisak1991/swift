@@ -358,6 +358,7 @@ ConcreteDeclRef Expr::getReferencedDecl(bool stopAtParenExpr) const {
   PASS_THROUGH_REFERENCE(UnresolvedMemberChainResult, getSubExpr);
   PASS_THROUGH_REFERENCE(DotSelf, getSubExpr);
   PASS_THROUGH_REFERENCE(Await, getSubExpr);
+  PASS_THROUGH_REFERENCE(Unsafe, getSubExpr);
   PASS_THROUGH_REFERENCE(Consume, getSubExpr);
   PASS_THROUGH_REFERENCE(Copy, getSubExpr);
   PASS_THROUGH_REFERENCE(Borrow, getSubExpr);
@@ -736,6 +737,7 @@ bool Expr::canAppendPostfixExpression(bool appendingPostfixOperator) const {
     return true;
 
   case ExprKind::Await:
+  case ExprKind::Unsafe:
   case ExprKind::Consume:
   case ExprKind::Copy:
   case ExprKind::Borrow:
@@ -954,6 +956,7 @@ bool Expr::isValidParentOfTypeExpr(Expr *typeExpr) const {
   case ExprKind::Sequence:
   case ExprKind::Paren:
   case ExprKind::Await:
+  case ExprKind::Unsafe:
   case ExprKind::Consume:
   case ExprKind::Copy:
   case ExprKind::Borrow:
@@ -1357,6 +1360,34 @@ CaptureListEntry::CaptureListEntry(PatternBindingDecl *PBD) : PBD(PBD) {
          "Capture lists only support single-var patterns");
 }
 
+CaptureListEntry CaptureListEntry::createParsed(
+    ASTContext &Ctx, ReferenceOwnership ownershipKind,
+    SourceRange ownershipRange, Identifier name, SourceLoc nameLoc,
+    SourceLoc equalLoc, Expr *initializer, DeclContext *DC) {
+
+  auto introducer =
+      (ownershipKind != ReferenceOwnership::Weak ? VarDecl::Introducer::Let
+                                                 : VarDecl::Introducer::Var);
+  auto *VD =
+      new (Ctx) VarDecl(/*isStatic==*/false, introducer, nameLoc, name, DC);
+
+  if (ownershipKind != ReferenceOwnership::Strong)
+    VD->getAttrs().add(
+        new (Ctx) ReferenceOwnershipAttr(ownershipRange, ownershipKind));
+
+  auto *pattern = NamedPattern::createImplicit(Ctx, VD);
+
+  auto *PBD = PatternBindingDecl::create(Ctx, /*StaticLoc=*/SourceLoc(),
+                                         StaticSpellingKind::None, nameLoc,
+                                         pattern, equalLoc, initializer, DC);
+  CaptureListEntry CLE(PBD);
+
+  if (CLE.isSimpleSelfCapture())
+    VD->setIsSelfParamCapture();
+
+  return CLE;
+}
+
 VarDecl *CaptureListEntry::getVar() const {
   return PBD->getSingleVar();
 }
@@ -1722,6 +1753,13 @@ Expr *CallExpr::getDirectCallee() const {
       continue;
     }
 
+    // Explicit specializations are currently invalid for function calls, but
+    // look through them for better recovery.
+    if (auto *spec = dyn_cast<UnresolvedSpecializeExpr>(fn)) {
+      fn = spec->getSubExpr();
+      continue;
+    }
+
     return fn;
   }
 }
@@ -1931,6 +1969,12 @@ unsigned AbstractClosureExpr::getDiscriminator() const {
   evaluateOrDefault(
       ctx.evaluator, LocalDiscriminatorsRequest{getParent()}, 0);
 
+#if NDEBUG
+  static constexpr bool useFallbackDiscriminator = true;
+#else
+  static constexpr bool useFallbackDiscriminator = false;
+#endif
+
   // If we don't have a discriminator, and either
   //   1. We have ill-formed code and we're able to assign a discriminator, or
   //   2. We are in a macro expansion buffer
@@ -1940,7 +1984,8 @@ unsigned AbstractClosureExpr::getDiscriminator() const {
   if (getRawDiscriminator() == InvalidDiscriminator &&
       (ctx.Diags.hadAnyError() ||
        getParentSourceFile()->getFulfilledMacroRole() != std::nullopt ||
-       getParent()->isModuleScopeContext())) {
+       getParent()->isModuleScopeContext() ||
+       useFallbackDiscriminator)) {
     auto discriminator = ctx.getNextDiscriminator(getParent());
     ctx.setMaxAssignedDiscriminator(getParent(), discriminator + 1);
     const_cast<AbstractClosureExpr *>(this)->
@@ -2361,13 +2406,11 @@ bool Expr::isSelfExprOf(const AbstractFunctionDecl *AFD, bool sameBase) const {
   return false;
 }
 
-TypeValueExpr *TypeValueExpr::createForDecl(DeclNameLoc Loc, TypeDecl *Decl,
-                                            DeclContext *DC) {
-  ASTContext &C = Decl->getASTContext();
-  assert(Loc.isValid());
-  auto *Repr = UnqualifiedIdentTypeRepr::create(C, Loc, Decl->createNameRef());
-  Repr->setValue(Decl, DC);
-  return new (C) TypeValueExpr(Repr);
+TypeValueExpr *TypeValueExpr::createForDecl(DeclNameLoc loc, 
+                                            GenericTypeParamDecl *paramDecl) {
+  auto &ctx = paramDecl->getASTContext();
+  ASSERT(loc.isValid());
+  return new (ctx) TypeValueExpr(loc, paramDecl);
 }
 
 OpenedArchetypeType *OpenExistentialExpr::getOpenedArchetype() const {
@@ -2577,9 +2620,9 @@ SingleValueStmtExpr::tryDigOutSingleValueStmtExpr(Expr *E) {
       if (isa<CoerceExpr>(E))
         return Action::Continue(E);
 
-      // Look through try/await (this is invalid, but we'll error on it in
-      // effect checking).
-      if (isa<AnyTryExpr>(E) || isa<AwaitExpr>(E))
+      // Look through try/await/unsafe (this is invalid, but we'll error on
+      // it in effect checking).
+      if (isa<AnyTryExpr>(E) || isa<AwaitExpr>(E) || isa<UnsafeExpr>(E))
         return Action::Continue(E);
 
       return Action::Stop();

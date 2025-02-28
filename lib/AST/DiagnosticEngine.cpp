@@ -431,16 +431,17 @@ InFlightDiagnostic::limitBehaviorUntilSwiftVersion(
     // wrapIn will result in the behavior of the wrapping diagnostic.
     if (limit >= DiagnosticBehavior::Warning) {
       if (majorVersion > 6) {
-        wrapIn(diag::error_in_a_future_swift_version);
+        wrapIn(diag::error_in_a_future_swift_lang_mode);
       } else {
-        wrapIn(diag::error_in_future_swift_version, majorVersion);
+        wrapIn(diag::error_in_swift_lang_mode, majorVersion);
       }
     }
 
     limitBehavior(limit);
   }
 
-  if (majorVersion == 6) {
+  // Record all of the diagnostics that are going to be emitted.
+  if (majorVersion == 6 && limit != DiagnosticBehavior::Ignore) {
     if (auto stats = Engine->statsReporter) {
       ++stats->getFrontendCounters().NumSwift6Errors;
     }
@@ -457,8 +458,7 @@ InFlightDiagnostic::warnUntilSwiftVersion(unsigned majorVersion) {
 
 InFlightDiagnostic &
 InFlightDiagnostic::warnInSwiftInterface(const DeclContext *context) {
-  auto sourceFile = context->getParentSourceFile();
-  if (sourceFile && sourceFile->Kind == SourceFileKind::Interface) {
+  if (context->isInSwiftinterface()) {
     return limitBehavior(DiagnosticBehavior::Warning);
   }
 

@@ -847,7 +847,8 @@ swift_task_create_commonImpl(size_t rawTaskCreateFlags,
      // basePriority should already be the right value
 
   } else if (taskIsUnstructured(taskCreateFlags, jobFlags)) {
-     SWIFT_TASK_DEBUG_LOG("Creating an unstructured task from %p", currentTask);
+     SWIFT_TASK_DEBUG_LOG("Creating an unstructured task from %p%s", currentTask,
+                          taskCreateFlags.isSynchronousStartTask() ? " [start synchronously]" : "");
 
     if (isUnspecified(basePriority)) {
       // Case 1: No priority specified
@@ -1762,6 +1763,30 @@ swift_task_addCancellationHandlerImpl(
 SWIFT_CC(swift)
 static void swift_task_removeCancellationHandlerImpl(
     CancellationNotificationStatusRecord *record) {
+  removeStatusRecordFromSelf(record);
+  swift_task_dealloc(record);
+}
+
+SWIFT_CC(swift)
+static EscalationNotificationStatusRecord*
+swift_task_addPriorityEscalationHandlerImpl(
+    EscalationNotificationStatusRecord::FunctionType handler,
+    void *context) {
+  void *allocation =
+      swift_task_alloc(sizeof(EscalationNotificationStatusRecord));
+  auto *record = ::new (allocation)
+      EscalationNotificationStatusRecord(handler, context);
+
+  addStatusRecordToSelf(record, [&](ActiveTaskStatus oldStatus, ActiveTaskStatus& newStatus) {
+    return true;
+  });
+
+  return record;
+}
+
+SWIFT_CC(swift)
+static void swift_task_removePriorityEscalationHandlerImpl(
+    EscalationNotificationStatusRecord *record) {
   removeStatusRecordFromSelf(record);
   swift_task_dealloc(record);
 }

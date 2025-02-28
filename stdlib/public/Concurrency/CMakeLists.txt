@@ -65,6 +65,8 @@ list(APPEND SWIFT_RUNTIME_CONCURRENCY_SWIFT_FLAGS
   "IsolatedAny"
   )
 
+list(APPEND SWIFT_RUNTIME_CONCURRENCY_SWIFT_FLAGS "-strict-memory-safety")
+
 list(APPEND SWIFT_RUNTIME_CONCURRENCY_C_FLAGS
   "-D__STDC_WANT_LIB_EXT1__=1")
 
@@ -140,6 +142,7 @@ set(SWIFT_RUNTIME_CONCURRENCY_SWIFT_SOURCES
   PartialAsyncTask.swift
   SourceCompatibilityShims.swift
   Task.swift
+  Task+PriorityEscalation.swift
   Task+TaskExecutor.swift
   TaskCancellation.swift
   TaskGroup.swift
@@ -179,6 +182,9 @@ add_swift_target_library(swift_Concurrency ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} I
   ${SWIFT_RUNTIME_CONCURRENCY_C_SOURCES}
   ${SWIFT_RUNTIME_CONCURRENCY_EXECUTOR_SOURCES}
   ${SWIFT_RUNTIME_CONCURRENCY_SWIFT_SOURCES}
+
+  GYB_SOURCES
+    Task+startSynchronously.swift.gyb
 
   SWIFT_MODULE_DEPENDS_ANDROID Android
   SWIFT_MODULE_DEPENDS_LINUX Glibc
@@ -247,7 +253,13 @@ if(SWIFT_SHOULD_BUILD_EMBEDDED_STDLIB AND SWIFT_SHOULD_BUILD_EMBEDDED_CONCURRENC
       if(NOT "${mod}" MATCHES "-macos$")
         continue()
       endif()
-      set(extra_c_compile_flags -D__MACH__ -D__APPLE__ -ffreestanding)
+      if("${mod}" MATCHES "riscv")
+        continue()
+      endif()
+      if("${mod}" MATCHES "armv6m")
+        continue()
+      endif()
+      set(extra_c_compile_flags -D__MACH__ -D__APPLE__ -ffreestanding -stdlib=libc++)
       set(extra_swift_compile_flags -Xcc -D__MACH__ -Xcc -D__APPLE__ -Xcc -ffreestanding)
     endif()
 

@@ -428,6 +428,10 @@ enum class PartitionOpKind : uint8_t {
   Assign,
 
   /// Assign one value to a fresh region, takes one arg.
+  ///
+  /// NOTE: This just produces a new value that is tracked by the dataflow. The
+  /// isolation characteristics of the value are actually decided by
+  /// tryToTrackValue and SILIsolationInfo::get().
   AssignFresh,
 
   /// Merge the regions of two values, takes two args, both must be from
@@ -1319,12 +1323,16 @@ public:
           if (auto value = instance.maybeGetValue()) {
             if (auto *fArg = dyn_cast<SILFunctionArgument>(value)) {
               if (fArg->getArgumentConvention().isIndirectOutParameter()) {
+                auto staticRegionIsolation =
+                    getIsolationRegionInfo(op.getOpArgs()[1]);
                 Region srcRegion = p.getRegion(op.getOpArgs()[1]);
                 auto dynamicRegionIsolation = getIsolationRegionInfo(srcRegion);
+
                 // We can unconditionally getValue here since we can never
                 // assign an actor introducing inst.
                 auto rep = getRepresentativeValue(op.getOpArgs()[1]).getValue();
-                if (!dynamicRegionIsolation.isDisconnected()) {
+                if (!dynamicRegionIsolation.isDisconnected() &&
+                    !staticRegionIsolation.isUnsafeNonIsolated()) {
                   handleError(AssignNeverSendableIntoSendingResultError(
                       op, op.getOpArgs()[0], fArg, op.getOpArgs()[1], rep,
                       dynamicRegionIsolation));
@@ -1374,6 +1382,12 @@ public:
       Region sentRegion = p.getRegion(sentElement);
       bool isClosureCapturedElt = false;
       SILDynamicMergedIsolationInfo sentRegionIsolation;
+
+      // TODO: Today we only return the first element in our region that has
+      // some form of isolation. This causes us to in the case of sending
+      // partial_applies to only emit a diagnostic for the first element in the
+      // capture list of the partial_apply. If we returned a list of potential
+      // errors... we could emit the error for each capture individually.
       auto pairOpt = getIsolationRegionInfo(sentRegion, op.getSourceOp());
       if (!pairOpt) {
         return handleError(UnknownCodePatternError(op));
@@ -1441,12 +1455,15 @@ public:
           if (auto value = instance.maybeGetValue()) {
             if (auto *fArg = dyn_cast<SILFunctionArgument>(value)) {
               if (fArg->getArgumentConvention().isIndirectOutParameter()) {
+                auto staticRegionIsolation =
+                    getIsolationRegionInfo(op.getOpArgs()[1]);
                 Region srcRegion = p.getRegion(op.getOpArgs()[1]);
                 auto dynamicRegionIsolation = getIsolationRegionInfo(srcRegion);
                 // We can unconditionally getValue here since we can never
                 // assign an actor introducing inst.
                 auto rep = getRepresentativeValue(op.getOpArgs()[1]).getValue();
-                if (!dynamicRegionIsolation.isDisconnected()) {
+                if (!dynamicRegionIsolation.isDisconnected() &&
+                    !staticRegionIsolation.isUnsafeNonIsolated()) {
                   handleError(AssignNeverSendableIntoSendingResultError(
                       op, op.getOpArgs()[0], fArg, op.getOpArgs()[1], rep,
                       dynamicRegionIsolation));

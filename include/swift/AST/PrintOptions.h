@@ -194,7 +194,7 @@ struct PrintOptions {
     Package // prints package, SPI, and public/inlinable decls
   };
 
-  InterfaceMode InterfaceContentKind;
+  InterfaceMode InterfaceContentKind = InterfaceMode::Private;
 
   bool printPublicInterface() const {
     return InterfaceContentKind == InterfaceMode::Public;
@@ -367,10 +367,6 @@ struct PrintOptions {
   OpaqueReturnTypePrintingMode OpaqueReturnTypePrinting =
       OpaqueReturnTypePrintingMode::WithOpaqueKeyword;
 
-  /// If non-null, opaque types that have this naming decl should be printed as
-  /// `some P1` instead of as a stable reference.
-  const ValueDecl *OpaqueReturnTypeNamingDecl = nullptr;
-
   /// Whether to print decl attributes that are only used internally,
   /// such as _silgen_name, transparent, etc.
   bool PrintUserInaccessibleAttrs = true;
@@ -400,6 +396,9 @@ struct PrintOptions {
 
   /// Suppress modify/read accessors.
   bool SuppressCoroutineAccessors = false;
+
+  /// Suppress the @execution attribute
+  bool SuppressExecutionAttribute = false;
 
   /// List of attribute kinds that should not be printed.
   std::vector<AnyAttrKind> ExcludeAttrList = {

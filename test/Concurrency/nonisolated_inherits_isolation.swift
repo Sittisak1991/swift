@@ -1,12 +1,11 @@
 // RUN: %target-swift-frontend %s -swift-version 6 -verify -verify-additional-prefix disabled- -c
-// RUN: %target-swift-frontend %s -swift-version 6 -verify -enable-experimental-feature NonIsolatedAsyncInheritsIsolationFromContext -verify-additional-prefix enable- -c -verify-additional-prefix enabled-
+// RUN: %target-swift-frontend %s -swift-version 6 -verify -enable-experimental-feature AsyncCallerExecution -verify-additional-prefix enable- -c -verify-additional-prefix enabled-
 
 // REQUIRES: asserts
 // REQUIRES: concurrency
-// REQUIRES: swift_feature_NonIsolatedAsyncInheritsIsolationFromContext
+// REQUIRES: swift_feature_AsyncCallerExecution
 
-// This test checks and validates that when
-// NonIsolatedAsyncInheritsIsolationFromContext is enabled, we emit the
+// This test checks and validates that when AsyncCallerExecution is enabled, we emit the
 // appropriate diagnostics. It also runs with the mode off so we can validate
 // and compare locally against the normal errors.
 
@@ -15,6 +14,11 @@
 //////////////////
 
 class NonSendableKlass {}
+
+nonisolated class NonIsolatedNonSendableKlass {
+  func unspecifiedMethod() async {}
+  nonisolated func nonisolatedMethod() async {}
+}
 
 func unspecifiedSyncUse<T>(_ t: T) {}
 func unspecifiedAsyncUse<T>(_ t: T) async {}
@@ -147,4 +151,18 @@ class MainActorKlass {
     await sendToCustom(x4) // expected-enabled-error {{sending 'x4' risks causing data races}}
     // expected-enabled-note @-1 {{sending main actor-isolated 'x4' to global actor 'CustomActor'-isolated global function 'sendToCustom' risks causing data races between global actor 'CustomActor'-isolated and main actor-isolated uses}}
   }
+}
+
+// We should not error on either of these since c is in the main actor's region
+// and our nonisolated/unspecified methods are inheriting the main actor
+// isolation which is safe since they are type checked as something that cannot
+// access any state that is outside of the current actor that c is reachable from.
+@MainActor
+func validateNonisolatedOnClassMeansCallerIsolationInheritingOnFuncDecl(
+  c: NonIsolatedNonSendableKlass
+) async {
+  await c.unspecifiedMethod() // expected-disabled-error {{sending 'c' risks causing data races}}
+  // expected-disabled-note @-1 {{sending main actor-isolated 'c' to nonisolated instance method 'unspecifiedMethod()' risks causing data races between nonisolated and main actor-isolated uses}}
+  await c.nonisolatedMethod() // expected-disabled-error {{sending 'c' risks causing data races}}
+  // expected-disabled-note @-1 {{sending main actor-isolated 'c' to nonisolated instance method 'nonisolatedMethod()' risks causing data races between nonisolated and main actor-isolated uses}}
 }

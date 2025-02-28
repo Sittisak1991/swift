@@ -792,7 +792,8 @@ Expr *TypeChecker::resolveDeclRefExpr(UnresolvedDeclRefExpr *UDRE,
                    : D->getInterfaceType());
     } else {
       if (makeTypeValue) {
-        return TypeValueExpr::createForDecl(UDRE->getNameLoc(), D, LookupDC);
+        return TypeValueExpr::createForDecl(UDRE->getNameLoc(),
+                                            cast<GenericTypeParamDecl>(D));
       } else {
         return TypeExpr::createForDecl(UDRE->getNameLoc(), D, LookupDC);
       }
@@ -1166,6 +1167,7 @@ public:
       if (!result)
         return Action::Stop();
       // Already walked.
+      seqExpr->setFolded(true);
       return Action::SkipNode(result);
     }
 

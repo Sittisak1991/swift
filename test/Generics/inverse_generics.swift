@@ -11,16 +11,20 @@ struct AttemptImplicitConditionalConformance<T: ~Copyable>: ~Copyable {
 }
 extension AttemptImplicitConditionalConformance: Copyable {}
 // expected-error@-1 {{generic struct 'AttemptImplicitConditionalConformance' required to be 'Copyable' but is marked with '~Copyable'}}
+// expected-error@-2 {{must explicitly state whether 'T' is required to conform to 'Copyable'}}
 
 enum Hello<T: ~Escapable & ~Copyable>: ~Escapable & ~Copyable {}
 extension Hello: Escapable {} // expected-error {{generic enum 'Hello' required to be 'Escapable' but is marked with '~Escapable'}}
+// expected-error@-1 {{must explicitly state whether 'T' is required to conform to 'Copyable'}}
+// expected-error@-2 {{must explicitly state whether 'T' is required to conform to 'Escapable'}}
 extension Hello: Copyable {} // expected-error {{generic enum 'Hello' required to be 'Copyable' but is marked with '~Copyable'}}
+// expected-error@-1 {{must explicitly state whether 'T' is required to conform to 'Copyable'}}
+// expected-error@-2 {{must explicitly state whether 'T' is required to conform to 'Escapable'}}
 
 enum HelloExplicitlyFixed<T: ~Escapable & ~Copyable>: Escapable, Copyable {}
 
 struct NoInverseBecauseNoDefault<T: ~Copyable & ~Escapable>: ~Copyable {}
 extension NoInverseBecauseNoDefault: Copyable where T: Copyable, T: ~Escapable {}
-// expected-error@-1 {{cannot suppress '~Escapable' on generic parameter 'T' defined in outer scope}}
 
 // Check support for explicit conditional conformance
 public struct ExplicitCond<T: ~Copyable>: ~Copyable {}
@@ -151,7 +155,7 @@ extension Maybe: Copyable where Wrapped: Copyable {}
 // expected-note@+2{{requirement specified as 'Wrapped' : 'Copyable'}}
 // expected-note@+1{{requirement from conditional conformance of 'Maybe<Wrapped>' to 'Copyable'}}
 struct RequireCopyable<T> {
-  // expected-note@-1 {{consider adding '~Copyable' to generic struct 'RequireCopyable'}}{{27-27=: ~Copyable}}
+  // expected-note@-1 {{consider adding '~Copyable' to generic struct 'RequireCopyable'}}{{27-27=: ~Copyable }}
   deinit {} // expected-error {{deinitializer cannot be declared in generic struct 'RequireCopyable' that conforms to 'Copyable'}}
 }
 
@@ -471,8 +475,8 @@ func checkExistentials() {
 
 typealias NotCopyable = ~Copyable
 typealias EmptyComposition = ~Copyable & ~Escapable
-func test(_ t: borrowing NotCopyable) {} // expected-error {{use of 'NotCopyable' (aka '~Copyable') as a type must be written 'any NotCopyable'}}
-func test(_ t: borrowing EmptyComposition) {} // expected-error {{use of 'EmptyComposition' (aka '~Copyable & ~Escapable') as a type must be written 'any EmptyComposition' (aka 'any ~Copyable & ~Escapable')}}
+func test(_ t: borrowing NotCopyable) {} // expected-warning {{use of 'NotCopyable' (aka '~Copyable') as a type must be written 'any NotCopyable'}}
+func test(_ t: borrowing EmptyComposition) {} // expected-warning {{use of 'EmptyComposition' (aka '~Copyable & ~Escapable') as a type must be written 'any EmptyComposition' (aka 'any ~Copyable & ~Escapable')}}
 
 typealias Copy = Copyable
 func test(_ z1: Copy, _ z2: Copyable) {}

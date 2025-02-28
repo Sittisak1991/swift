@@ -1670,16 +1670,14 @@ bool WitnessChecker::findBestWitness(
     // interface can be treated as opaque.
     // FIXME: ...but we should do something better about types.
     if (conformance && !conformance->isInvalid()) {
-      if (auto *SF = DC->getParentSourceFile()) {
-        if (SF->Kind == SourceFileKind::Interface) {
-          auto match = matchWitness(ReqEnvironmentCache, Proto,
-                                    conformance, DC, requirement, requirement);
-          if (match.isViable()) {
-            numViable = 1;
-            bestIdx = matches.size();
-            matches.push_back(std::move(match));
-            return true;
-          }
+      if (DC->isInSwiftinterface()) {
+        auto match = matchWitness(ReqEnvironmentCache, Proto, conformance, DC,
+                                  requirement, requirement);
+        if (match.isViable()) {
+          numViable = 1;
+          bestIdx = matches.size();
+          matches.push_back(std::move(match));
+          return true;
         }
       }
     }
@@ -2012,6 +2010,9 @@ class MultiConformanceChecker {
   /// Determine whether the given requirement was left unsatisfied.
   bool isUnsatisfiedReq(NormalProtocolConformance *conformance, ValueDecl *req);
 
+  /// Diagnose redundant `@preconcurrency` attributes on conformances.
+  void diagnoseRedundantPreconcurrency();
+
 public:
   MultiConformanceChecker(ASTContext &ctx) : Context(ctx) {}
 
@@ -2020,6 +2021,11 @@ public:
   /// Add a conformance into the batched checker.
   void addConformance(NormalProtocolConformance *conformance) {
     AllConformances.push_back(conformance);
+  }
+
+  /// Get the conformances associated with this checker.
+  ArrayRef<NormalProtocolConformance *> getConformances() const {
+    return AllConformances;
   }
 
   /// Peek the unsatisfied requirements collected during conformance checking.
@@ -2084,7 +2090,74 @@ static void diagnoseProtocolStubFixit(
     NormalProtocolConformance *conformance,
     ArrayRef<ASTContext::MissingWitness> missingWitnesses);
 
+void MultiConformanceChecker::diagnoseRedundantPreconcurrency() {
+  // Collect explicit preconcurrency conformances for which preconcurrency is
+  // not directly effectful.
+  SmallVector<NormalProtocolConformance *, 2> explicitConformances;
+  for (auto *conformance : AllConformances) {
+    if (conformance->getSourceKind() == ConformanceEntryKind::Explicit &&
+        conformance->isPreconcurrency() &&
+        !conformance->isPreconcurrencyEffectful()) {
+      explicitConformances.push_back(conformance);
+    }
+  }
+
+  if (explicitConformances.empty()) {
+    return;
+  }
+
+  // If preconcurrency is effectful for an implied conformance (a conformance
+  // to an inherited protocol), consider it effectful for the explicit implying
+  // one.
+  for (auto *conformance : AllConformances) {
+    switch (conformance->getSourceKind()) {
+    case ConformanceEntryKind::Inherited:
+    case ConformanceEntryKind::PreMacroExpansion:
+      llvm_unreachable("Invalid normal protocol conformance kind");
+    case ConformanceEntryKind::Explicit:
+    case ConformanceEntryKind::Synthesized:
+      continue;
+    case ConformanceEntryKind::Implied:
+      if (!conformance->isPreconcurrency() ||
+          !conformance->isPreconcurrencyEffectful()) {
+        continue;
+      }
+
+      auto *proto = conformance->getProtocol();
+      for (auto *explicitConformance : explicitConformances) {
+        if (explicitConformance->getProtocol()->inheritsFrom(proto)) {
+          explicitConformance->setPreconcurrencyEffectful();
+        }
+      }
+
+      continue;
+    }
+  }
+
+  // Diagnose all explicit preconcurrency conformances for which preconcurrency
+  // is not effectful (redundant).
+  for (auto *conformance : explicitConformances) {
+    if (conformance->isPreconcurrencyEffectful()) {
+      continue;
+    }
+
+    auto diag = Context.Diags.diagnose(
+        conformance->getLoc(), diag::preconcurrency_conformance_not_used,
+        conformance->getProtocol()->getDeclaredInterfaceType());
+
+    SourceLoc preconcurrencyLoc = conformance->getPreconcurrencyLoc();
+    if (preconcurrencyLoc.isValid()) {
+      SourceLoc endLoc = preconcurrencyLoc.getAdvancedLoc(1);
+      diag.fixItRemove(SourceRange(preconcurrencyLoc, endLoc));
+    }
+  }
+}
+
 void MultiConformanceChecker::checkAllConformances() {
+  if (AllConformances.empty()) {
+    return;
+  }
+
   llvm::SmallVector<ASTContext::MissingWitness, 2> MissingWitnesses;
 
   bool anyInvalid = false;
@@ -2148,6 +2221,9 @@ void MultiConformanceChecker::checkAllConformances() {
       }
     }
   }
+
+  // Diagnose any redundant preconcurrency.
+  this->diagnoseRedundantPreconcurrency();
 
   // Emit diagnostics at the very end.
   for (auto *conformance : AllConformances) {
@@ -2263,7 +2339,8 @@ static void diagnoseConformanceImpliedByConditionalConformance(
 /// to the given protocol. This should return true when @unchecked can be
 /// used to disable those semantic checks.
 static bool hasAdditionalSemanticChecks(ProtocolDecl *proto) {
-  return proto->isSpecificProtocol(KnownProtocolKind::Sendable);
+  return proto->isSpecificProtocol(KnownProtocolKind::Sendable) ||
+      proto->isSpecificProtocol(KnownProtocolKind::SendableMetatype);
 }
 
 /// Determine whether a conformance to this protocol can be determined at
@@ -2464,6 +2541,22 @@ checkIndividualConformance(NormalProtocolConformance *conformance) {
       ComplainLoc, diag::unchecked_conformance_not_special, ProtoType);
   }
 
+  // Complain if the conformance is isolated but the conforming type is
+  // not global-actor-isolated.
+  if (conformance->isIsolated()) {
+    auto enclosingNominal = DC->getSelfNominalTypeDecl();
+    if (!enclosingNominal ||
+        !getActorIsolation(enclosingNominal).isGlobalActor()) {
+      Context.Diags.diagnose(
+          ComplainLoc, diag::isolated_conformance_not_global_actor_isolated);
+    }
+    
+    if (!Context.LangOpts.hasFeature(Feature::IsolatedConformances)) {
+      Context.Diags.diagnose(
+          ComplainLoc, diag::isolated_conformance_experimental_feature);
+    }
+  }
+  
   bool allowImpliedConditionalConformance = false;
   if (Proto->isSpecificProtocol(KnownProtocolKind::Sendable)) {
     // In -swift-version 5 mode, a conditional conformance to a protocol can imply
@@ -2547,8 +2640,8 @@ checkIndividualConformance(NormalProtocolConformance *conformance) {
 
   // If we're enforcing strict memory safety and this conformance hasn't
   // opted out, look for safe/unsafe witness mismatches.
-  if (!conformance->isUnsafe() && !conformance->isSafe() &&
-      Context.LangOpts.hasFeature(Feature::WarnUnsafe)) {
+  if (conformance->getExplicitSafety() == ExplicitSafety::Unspecified &&
+      Context.LangOpts.hasFeature(Feature::StrictMemorySafety)) {
     // Collect all of the unsafe uses for this conformance.
     SmallVector<UnsafeUse, 2> unsafeUses;
     for (auto requirement: Proto->getMembers()) {
@@ -2559,7 +2652,7 @@ checkIndividualConformance(NormalProtocolConformance *conformance) {
           TypeWitnessAndDecl typeWitnessAndDecl =
             conformance->getTypeWitnessAndDecl(assocType);
           Type typeWitness = typeWitnessAndDecl.getWitnessType();
-          if (!assocType->isUnsafe() && typeWitness && typeWitness->isUnsafe()) {
+          if (!isUnsafe(assocType) && typeWitness && typeWitness->isUnsafe()) {
             SourceLoc loc;
             if (auto typeDecl = typeWitnessAndDecl.getWitnessDecl()) {
               loc = typeDecl->getLoc();
@@ -2597,7 +2690,7 @@ checkIndividualConformance(NormalProtocolConformance *conformance) {
           conformance->getType(), Proto)
       .fixItInsert(conformance->getProtocolNameLoc(), "@unsafe ");
       for (const auto& unsafeUse : unsafeUses)
-        diagnoseUnsafeUse(unsafeUse, /*asNote=*/true);
+        diagnoseUnsafeUse(unsafeUse);
     }
   }
 }
@@ -3236,6 +3329,14 @@ static bool hasExplicitGlobalActorAttr(ValueDecl *decl) {
   return !globalActorAttr->first->isImplicit();
 }
 
+/// Determine whether the given actor isolation matches that of the enclosing
+/// type.
+static bool isolationMatchesEnclosingType(
+    ActorIsolation isolation, NominalTypeDecl *nominal) {
+  auto nominalIsolation = getActorIsolation(nominal);
+  return isolation == nominalIsolation;
+}
+
 std::optional<ActorIsolation>
 ConformanceChecker::checkActorIsolation(ValueDecl *requirement,
                                         ValueDecl *witness,
@@ -3265,7 +3366,8 @@ ConformanceChecker::checkActorIsolation(ValueDecl *requirement,
       Conformance->isPreconcurrency() &&
       !(requirementIsolation.isActorIsolated() ||
         requirement->getAttrs().hasAttribute<NonisolatedAttr>());
-
+  bool isIsolatedConformance = false;
+  
   switch (refResult) {
   case ActorReferenceResult::SameConcurrencyDomain:
     // If the witness has distributed-actor isolation, we have extra
@@ -3297,6 +3399,17 @@ ConformanceChecker::checkActorIsolation(ValueDecl *requirement,
 
     return std::nullopt;
   case ActorReferenceResult::EntersActor:
+    // If the conformance itself is isolated, and the witness isolation
+    // matches the enclosing type's isolation, treat this as being in the
+    // same concurrency domain.
+    if (Conformance->isIsolated() &&
+        refResult.isolation.isGlobalActor() &&
+        isolationMatchesEnclosingType(
+            refResult.isolation, DC->getSelfNominalTypeDecl())) {
+      sameConcurrencyDomain = true;
+      isIsolatedConformance = true;
+    }
+
     // Handled below.
     break;
   }
@@ -3369,7 +3482,12 @@ ConformanceChecker::checkActorIsolation(ValueDecl *requirement,
 
   // If we aren't missing anything or this is a witness to a `@preconcurrency`
   // conformance, do a Sendable check and move on.
-  if (!missingOptions || isPreconcurrency) {
+  if (!missingOptions || isPreconcurrency || isIsolatedConformance) {
+    // An isolated conformance won't ever leave the isolation domain in which
+    // it was created, so there is nothing to check.
+    if (isIsolatedConformance)
+      return std::nullopt;
+    
     // FIXME: Disable Sendable checking when the witness is an initializer
     // that is explicitly marked nonisolated.
     if (isa<ConstructorDecl>(witness) &&
@@ -3444,10 +3562,12 @@ ConformanceChecker::checkActorIsolation(ValueDecl *requirement,
 
   // Complain that this witness cannot conform to the requirement due to
   // actor isolation.
-  witness->diagnose(diag::actor_isolated_witness,
-                    isDistributed && !isDistributedDecl(witness),
-                    refResult.isolation, witness, requirementIsolation)
-    .limitBehaviorUntilSwiftVersion(behavior, 6);
+  witness
+      ->diagnose(diag::actor_isolated_witness,
+                 isDistributed && !isDistributedDecl(witness),
+                 refResult.isolation, witness, requirementIsolation,
+                 Conformance->getProtocol())
+      .limitBehaviorUntilSwiftVersion(behavior, 6);
 
   // If we need 'distributed' on the witness, add it.
   if (missingOptions.contains(MissingFlags::WitnessDistributed)) {
@@ -3467,26 +3587,38 @@ ConformanceChecker::checkActorIsolation(ValueDecl *requirement,
       witness->diagnose(diag::note_add_nonisolated_to_decl, witness)
             .fixItInsert(witness->getAttributeInsertionLoc(true), "nonisolated ");
     }
-
+    
     // Another way to address the issue is to mark the conformance as
-    // "preconcurrency".
+    // "isolated" or "@preconcurrency".
     if (Conformance->getSourceKind() == ConformanceEntryKind::Explicit &&
-        !Conformance->isPreconcurrency() &&
-        !suggestedPreconcurrency &&
+        !Conformance->isIsolated() && !Conformance->isPreconcurrency() &&
+        !suggestedPreconcurrencyOrIsolated &&
         !requirementIsolation.isActorIsolated()) {
+      if (Context.LangOpts.hasFeature(Feature::IsolatedConformances)) {
+        Context.Diags.diagnose(Conformance->getProtocolNameLoc(),
+                               diag::add_isolated_to_conformance,
+                               Proto->getName(), refResult.isolation)
+            .fixItInsert(Conformance->getProtocolNameLoc(), "isolated ");
+      }
+
       Context.Diags.diagnose(Conformance->getProtocolNameLoc(),
                              diag::add_preconcurrency_to_conformance,
                              Proto->getName())
           .fixItInsert(Conformance->getProtocolNameLoc(), "@preconcurrency ");
-      suggestedPreconcurrency = true;
+      
+      suggestedPreconcurrencyOrIsolated = true;
     }
   }
 
   // If there are remaining options, they are missing async/throws on the
   // requirement itself. If we have a source location for the requirement,
   // provide those in a note.
-  if (missingOptions && requirement->getLoc().isValid() &&
-      isa<AbstractFunctionDecl>(requirement)) {
+
+  if (requirement->getLoc().isInvalid()) {
+    return std::nullopt;
+  }
+
+  if (missingOptions && isa<AbstractFunctionDecl>(requirement)) {
     int suggestAddingModifiers = 0;
     std::string modifiers;
     if (missingOptions.contains(MissingFlags::RequirementAsync)) {
@@ -3532,7 +3664,8 @@ ConformanceChecker::checkActorIsolation(ValueDecl *requirement,
         diag.fixItInsert(insertLoc, modifiers);
     }
   } else {
-    requirement->diagnose(diag::decl_declared_here, requirement);
+    requirement->diagnose(diag::protocol_requirement_declared_here,
+                          requirement);
   }
 
   return std::nullopt;
@@ -4644,8 +4777,7 @@ ResolveWitnessResult ConformanceChecker::resolveWitnessViaDerivation(
                        ValueDecl *requirement) {
   assert(!isa<AssociatedTypeDecl>(requirement) && "Use resolveTypeWitnessVia*");
 
-  auto *SF = DC->getParentSourceFile();
-  if (SF != nullptr && SF->Kind == SourceFileKind::Interface)
+  if (DC->isInSwiftinterface())
     return ResolveWitnessResult::Missing;
 
   // Find the declaration that derives the protocol conformance.
@@ -4881,12 +5013,16 @@ static bool diagnoseTypeWitnessAvailability(
   bool shouldError =
       ctx.LangOpts.EffectiveLanguageVersion.isVersionAtLeast(warnBeforeVersion);
 
-  if (auto attr = where.shouldDiagnoseDeclAsUnavailable(witness)) {
+  auto constraint =
+      getAvailabilityConstraintsForDecl(witness, where.getAvailability())
+          .getPrimaryConstraint();
+  if (constraint && constraint->isUnavailable()) {
+    auto attr = constraint->getAttr();
     ctx.addDelayedConformanceDiag(
         conformance, shouldError,
         [witness, assocType, attr](NormalProtocolConformance *conformance) {
           SourceLoc loc = getLocForDiagnosingWitness(conformance, witness);
-          EncodedDiagnosticMessage encodedMessage(attr->getMessage());
+          EncodedDiagnosticMessage encodedMessage(attr.getMessage());
           auto &ctx = conformance->getDeclContext()->getASTContext();
           ctx.Diags
               .diagnose(loc, diag::witness_unavailable, witness,
@@ -5071,6 +5207,8 @@ static void ensureRequirementsAreSatisfied(ASTContext &ctx,
   if (where.isImplicit())
     return;
 
+  bool diagnosedIsolatedConformanceIssue = false;
+
   conformance->forEachAssociatedConformance(
     [&](Type depTy, ProtocolDecl *proto, unsigned index) {
       auto assocConf = conformance->getAssociatedConformance(depTy, proto);
@@ -5092,6 +5230,50 @@ static void ensureRequirementsAreSatisfied(ASTContext &ctx,
         diagnoseConformanceAvailability(
             conformance->getLoc(), assocConf,
             where.withRefinedAvailability(availability), depTy, replacementTy);
+      }
+
+      if (!diagnosedIsolatedConformanceIssue) {
+        bool foundIssue = forEachIsolatedConformance(
+            ProtocolConformanceRef(assocConf),
+            [&](ProtocolConformance *isolatedConformance) {
+              // If the conformance we're checking isn't isolated at all, it
+              // needs "isolated".
+              if (!conformance->isIsolated()) {
+                ctx.Diags.diagnose(
+                    conformance->getLoc(),
+                    diag::nonisolated_conformance_depends_on_isolated_conformance,
+                    typeInContext, conformance->getProtocol()->getName(),
+                    getConformanceIsolation(isolatedConformance),
+                    isolatedConformance->getType(),
+                    isolatedConformance->getProtocol()->getName()
+               ).fixItInsert(conformance->getProtocolNameLoc(), "isolated ");
+
+                return true;
+              }
+
+              // The conformance is isolated, but we need it to have the same
+              // isolation as the other isolated conformance we found.
+              auto outerIsolation = getConformanceIsolation(conformance);
+              auto innerIsolation = getConformanceIsolation(isolatedConformance);
+              if (outerIsolation != innerIsolation) {
+                ctx.Diags.diagnose(
+                    conformance->getLoc(),
+                    diag::isolated_conformance_mismatch_with_associated_isolation,
+                    outerIsolation,
+                    typeInContext, conformance->getProtocol()->getName(),
+                    innerIsolation,
+                    isolatedConformance->getType(),
+                    isolatedConformance->getProtocol()->getName()
+                );
+
+                return true;
+              }
+
+              return false;
+            }
+        );
+
+        diagnosedIsolatedConformanceIssue = foundIssue;
       }
 
       return false;
@@ -5337,16 +5519,8 @@ void ConformanceChecker::resolveValueWitnesses() {
     }
   }
 
-  if (Conformance->isPreconcurrency() && !usesPreconcurrency) {
-    auto diag = DC->getASTContext().Diags.diagnose(
-        Conformance->getLoc(), diag::preconcurrency_conformance_not_used,
-        Proto->getDeclaredInterfaceType());
-
-    SourceLoc preconcurrencyLoc = Conformance->getPreconcurrencyLoc();
-    if (preconcurrencyLoc.isValid()) {
-      SourceLoc endLoc = preconcurrencyLoc.getAdvancedLoc(1);
-      diag.fixItRemove(SourceRange(preconcurrencyLoc, endLoc));
-    }
+  if (Conformance->isPreconcurrency() && usesPreconcurrency) {
+    Conformance->setPreconcurrencyEffectful();
   }
 
   // Finally, check some ad-hoc protocol requirements.
@@ -6088,7 +6262,7 @@ static void inferStaticInitializeObjCMetadata(ClassDecl *classDecl) {
   // FIXME: This is a workaround. The proper solution is for IRGen to
   // only statically initialize the Objective-C metadata when running on
   // a new-enough OS.
-  if (auto sourceFile = classDecl->getParentSourceFile()) {
+  if (classDecl->getParentSourceFile()) {
     AvailabilityRange safeRangeUnderApprox{
         AvailabilityInference::availableRange(classDecl)};
     AvailabilityRange runningOSOverApprox =
@@ -6241,7 +6415,6 @@ void TypeChecker::checkConformancesInContext(IterableDeclContext *idc) {
   ProtocolConformance *SendableConformance = nullptr;
   bool hasDeprecatedUnsafeSendable = false;
   bool sendableConformancePreconcurrency = false;
-  bool anyInvalid = false;
   for (auto conformance : conformances) {
     // Check and record normal conformances.
     if (auto normal = dyn_cast<NormalProtocolConformance>(conformance)) {
@@ -6375,12 +6548,6 @@ void TypeChecker::checkConformancesInContext(IterableDeclContext *idc) {
     }
   }
 
-  // Catalog all of members of this declaration context that satisfy
-  // requirements of conformances in this context.
-  SmallVector<ValueDecl *, 16>
-    unsatisfiedReqs(groupChecker.getUnsatisfiedRequirements().begin(),
-                    groupChecker.getUnsatisfiedRequirements().end());
-
   // Diagnose any conflicts attributed to this declaration context.
   for (const auto &diag : idc->takeConformanceDiagnostics()) {
     // Figure out the declaration of the existing conformance.
@@ -6512,9 +6679,19 @@ void TypeChecker::checkConformancesInContext(IterableDeclContext *idc) {
                            diag.ExistingExplicitProtocol->getName());
   }
 
+  if (groupChecker.getConformances().empty()) {
+    return;
+  }
+
+  // Catalog all of members of this declaration context that satisfy
+  // requirements of conformances in this context.
+  SmallVector<ValueDecl *, 16> unsatisfiedReqs(
+      groupChecker.getUnsatisfiedRequirements().begin(),
+      groupChecker.getUnsatisfiedRequirements().end());
+
   // If there were any unsatisfied requirements, check whether there
   // are any near-matches we should diagnose.
-  if (!unsatisfiedReqs.empty() && !anyInvalid) {
+  if (!unsatisfiedReqs.empty()) {
     if (sf->Kind != SourceFileKind::Interface) {
       // Find all of the members that aren't used to satisfy
       // requirements, and check whether they are close to an

@@ -57,8 +57,8 @@ int swift_ASTGen_emitParserDiagnostics(
 // Build AST nodes for the top-level entities in the syntax.
 void swift_ASTGen_buildTopLevelASTNodes(
     BridgedDiagnosticEngine diagEngine, void *_Nonnull sourceFile,
-    BridgedDeclContext declContext, BridgedASTContext astContext,
-    void *_Nonnull outputContext,
+    BridgedDeclContext declContext, BridgedNullableDecl attachedDecl,
+    BridgedASTContext astContext, void *_Nonnull outputContext,
     void (*_Nonnull)(BridgedASTNode, void *_Nonnull));
 
 BridgedFingerprint
@@ -110,6 +110,14 @@ swift_ASTGen_virtualFiles(void *_Nonnull sourceFile,
                           BridgedVirtualFile *_Nullable *_Nonnull virtualFiles);
 void swift_ASTGen_freeBridgedVirtualFiles(
     BridgedVirtualFile *_Nullable virtualFiles, size_t numFiles);
+
+bool swift_ASTGen_parseAvailabilityMacroDefinition(
+    BridgedASTContext ctx, BridgedDeclContext dc, BridgedDiagnosticEngine diags,
+    BridgedStringRef buffer,
+    BridgedAvailabilityMacroDefinition *_Nonnull outPtr);
+
+void swift_ASTGen_freeAvailabilityMacroDefinition(
+    BridgedAvailabilityMacroDefinition *_Nonnull definition);
 
 #ifdef __cplusplus
 }

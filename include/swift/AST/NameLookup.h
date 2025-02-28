@@ -19,6 +19,7 @@
 
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/CatchNode.h"
+#include "swift/AST/ConformanceAttributes.h"
 #include "swift/AST/GenericSignature.h"
 #include "swift/AST/Identifier.h"
 #include "swift/AST/Module.h"
@@ -603,17 +604,7 @@ void forEachPotentialAttachedMacro(
 
 /// Describes an inherited nominal entry.
 struct InheritedNominalEntry : Located<NominalTypeDecl *> {
-  /// The location of the "unchecked" attribute, if present.
-  SourceLoc uncheckedLoc;
-
-  /// The location of the "preconcurrency" attribute if present.
-  SourceLoc preconcurrencyLoc;
-
-  /// The location of the "unsafe" attribute if present.
-  SourceLoc unsafeLoc;
-
-  /// The range of the "safe(unchecked)" attribute if present.
-  SourceRange safeRange;
+  ConformanceAttributes attributes;
 
   /// Whether this inherited entry was suppressed via "~".
   bool isSuppressed;
@@ -621,12 +612,10 @@ struct InheritedNominalEntry : Located<NominalTypeDecl *> {
   InheritedNominalEntry() { }
 
   InheritedNominalEntry(NominalTypeDecl *item, SourceLoc loc,
-                        SourceLoc uncheckedLoc, SourceLoc preconcurrencyLoc,
-                        SourceLoc unsafeLoc, SourceRange safeRange,
+                        ConformanceAttributes attributes,
                         bool isSuppressed)
-      : Located(item, loc), uncheckedLoc(uncheckedLoc),
-        preconcurrencyLoc(preconcurrencyLoc), unsafeLoc(unsafeLoc),
-        safeRange(safeRange), isSuppressed(isSuppressed) {}
+      : Located(item, loc), attributes(attributes),
+        isSuppressed(isSuppressed) {}
 };
 
 /// Retrieve the set of nominal type declarations that are directly

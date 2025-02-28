@@ -441,7 +441,7 @@ public enum VariableScopeInstruction {
   }
 
   public var endOperands: LazyFilterSequence<UseList> {
-    return scopeBegin.uses.endingLifetime
+    scopeBegin.uses.lazy.filter { $0.endsLifetime || $0.instruction is ExtendLifetimeInst }
   }
 
   // TODO: with SIL verification, we might be able to make varDecl non-Optional.
@@ -1087,6 +1087,10 @@ class MarkDependenceInst : SingleValueInstruction {
   public func settleToEscaping() {
     bridged.MarkDependenceInst_settleToEscaping()
   }
+
+  public var hasScopedLifetime: Bool {
+    return isNonEscaping && type.isObject && ownership == .owned && type.isEscapable(in: parentFunction)
+  }
 }
 
 final public class RefToBridgeObjectInst : SingleValueInstruction {
@@ -1205,7 +1209,7 @@ final public class WitnessMethodInst : SingleValueInstruction {}
 
 final public class IsUniqueInst : SingleValueInstruction, UnaryInstruction {}
 
-final public class IsEscapingClosureInst : SingleValueInstruction, UnaryInstruction {}
+final public class DestroyNotEscapedClosureInst : SingleValueInstruction, UnaryInstruction {}
 
 final public class MarkUnresolvedNonCopyableValueInst: SingleValueInstruction, UnaryInstruction {}
 
@@ -1273,10 +1277,6 @@ final public class AllocStackInst : SingleValueInstruction, Allocation, DebugVar
   public var deallocations: LazyMapSequence<LazyFilterSequence<UseList>, Instruction> {
     uses.users(ofType: DeallocStackInst.self)
   }
-}
-
-final public class AllocVectorInst : SingleValueInstruction, Allocation, UnaryInstruction {
-  public var capacity: Value { operand.value }
 }
 
 public class AllocRefInstBase : SingleValueInstruction, Allocation {
@@ -1696,6 +1696,10 @@ final public class CheckedCastBranchInst : TermInst, UnaryInstruction {
   public var source: Value { operand.value }
   public var successBlock: BasicBlock { bridged.CheckedCastBranch_getSuccessBlock().block }
   public var failureBlock: BasicBlock { bridged.CheckedCastBranch_getFailureBlock().block }
+
+  public func updateSourceFormalTypeFromOperandLoweredType() {
+    bridged.CheckedCastBranch_updateSourceFormalTypeFromOperandLoweredType()
+  }
 }
 
 final public class CheckedCastAddrBranchInst : TermInst {
@@ -1735,4 +1739,7 @@ final public class ThunkInst : Instruction {
 }
 
 final public class MergeIsolationRegionInst : Instruction {
+}
+
+final public class IgnoredUseInst : Instruction, UnaryInstruction {
 }

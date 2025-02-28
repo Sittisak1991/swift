@@ -245,15 +245,21 @@ bool swift::isOverrideBasedOnType(const ValueDecl *decl, Type declTy,
 
 static bool isUnavailableInAllVersions(ValueDecl *decl) {
   ASTContext &ctx = decl->getASTContext();
-  auto attr = decl->getUnavailableAttr();
-  if (!attr)
-    return false;
 
-  if (attr->isUnconditionallyUnavailable())
-    return true;
+  auto deploymentContext = AvailabilityContext::forDeploymentTarget(ctx);
+  auto constraints = getAvailabilityConstraintsForDecl(decl, deploymentContext);
+  for (auto constraint : constraints) {
+    switch (constraint.getReason()) {
+    case AvailabilityConstraint::Reason::UnconditionallyUnavailable:
+    case AvailabilityConstraint::Reason::IntroducedInLaterVersion:
+      return true;
+    case AvailabilityConstraint::Reason::Obsoleted:
+    case AvailabilityConstraint::Reason::IntroducedInLaterDynamicVersion:
+      break;
+    }
+  }
 
-  return attr->getVersionAvailability(ctx) ==
-         AvailableVersionComparison::Unavailable;
+  return false;
 }
 
 /// Perform basic checking to determine whether a declaration can override a
@@ -1593,6 +1599,7 @@ namespace  {
     UNINTERESTING_ATTR(DynamicCallable)
     UNINTERESTING_ATTR(DynamicMemberLookup)
     UNINTERESTING_ATTR(SILGenName)
+    UNINTERESTING_ATTR(Execution)
     UNINTERESTING_ATTR(Exported)
     UNINTERESTING_ATTR(ForbidSerializingReference)
     UNINTERESTING_ATTR(GKInspectable)
@@ -1816,10 +1823,10 @@ static bool isAvailabilitySafeForOverride(ValueDecl *override,
 
   // Allow overrides that are not as available as the base decl as long as the
   // override is as available as its context.
-  auto overrideTypeAvailability = AvailabilityInference::availableRange(
+  auto availabilityContext = TypeChecker::availabilityForDeclSignature(
       override->getDeclContext()->getSelfNominalTypeDecl());
 
-  return overrideTypeAvailability.isContainedIn(overrideInfo);
+  return availabilityContext.getPlatformRange().isContainedIn(overrideInfo);
 }
 
 /// Returns true if a diagnostic about an accessor being less available
@@ -2223,7 +2230,7 @@ static bool checkSingleOverride(ValueDecl *override, ValueDecl *base) {
     return true;
   }
 
-  // FIXME: Possibly should extend to more availability checking.
+  // FIXME: [availability] Possibly should extend to more availability checking.
   auto unavailabilityStatusAndAttr =
       checkOverrideUnavailability(override, base);
   auto unavailableAttr = unavailabilityStatusAndAttr.second;
@@ -2252,7 +2259,7 @@ static bool checkSingleOverride(ValueDecl *override, ValueDecl *base) {
     diagnoseOverrideForAvailability(override, base);
   }
 
-  if (ctx.LangOpts.hasFeature(Feature::WarnUnsafe)) {
+  if (ctx.LangOpts.hasFeature(Feature::StrictMemorySafety)) {
     // If the override is unsafe but the base declaration is not, then the
     // inheritance itself is unsafe.
     auto subs = SubstitutionMap::getOverrideSubstitutions(base, override);
@@ -2261,7 +2268,7 @@ static bool checkSingleOverride(ValueDecl *override, ValueDecl *base) {
     if (isUnsafe(overrideRef) && !isUnsafe(baseRef)) {
       // Don't diagnose @unsafe overrides if the subclass is @unsafe.
       auto overridingClass = override->getDeclContext()->getSelfClassDecl();
-      bool shouldDiagnose = !overridingClass || !overridingClass->allowsUnsafe();
+      bool shouldDiagnose = !overridingClass || !isUnsafe(overridingClass);
 
       if (shouldDiagnose) {
         diagnoseUnsafeUse(UnsafeUse::forOverride(override, base));

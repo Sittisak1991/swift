@@ -19,6 +19,7 @@
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/ClangModuleLoader.h"
+#include "swift/AST/ConformanceAttributes.h"
 #include "swift/AST/DebuggerClient.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/GenericParamList.h"
@@ -393,6 +394,16 @@ static ConstructorComparison compareConstructors(ConstructorDecl *ctor1,
   return ConstructorComparison::Same;
 }
 
+static bool isMemberImplementation(ValueDecl *VD) {
+  return VD->isObjCMemberImplementation();
+}
+static bool isMemberImplementation(OperatorDecl *VD) {
+  return false;
+}
+static bool isMemberImplementation(PrecedenceGroupDecl *VD) {
+  return false;
+}
+
 /// Given a set of declarations whose names and interface types have matched,
 /// figure out which of these declarations have been shadowed by others.
 template <typename T>
@@ -412,7 +423,8 @@ static void recordShadowedDeclsAfterTypeMatch(
   for (unsigned firstIdx : indices(decls)) {
     auto firstDecl = decls[firstIdx];
     auto firstModule = firstDecl->getModuleContext();
-    bool firstTopLevel = firstDecl->getDeclContext()->isModuleScopeContext();
+    auto firstDC = firstDecl->getDeclContext();
+    bool firstTopLevel = firstDC->isModuleScopeContext();
 
     auto name = firstDecl->getBaseName();
 
@@ -454,7 +466,8 @@ static void recordShadowedDeclsAfterTypeMatch(
       // Determine whether one module takes precedence over another.
       auto secondDecl = decls[secondIdx];
       auto secondModule = secondDecl->getModuleContext();
-      bool secondTopLevel = secondDecl->getDeclContext()->isModuleScopeContext();
+      auto secondDC = secondDecl->getDeclContext();
+      bool secondTopLevel = secondDC->isModuleScopeContext();
       bool secondPrivate = isPrivateImport(secondModule);
 
       // For member types, we skip most of the below rules. Instead, we allow
@@ -534,6 +547,22 @@ static void recordShadowedDeclsAfterTypeMatch(
           break;
         } else if (firstScoped && !secondScoped) {
           shadowed.insert(secondDecl);
+          continue;
+        }
+      }
+
+      // Member implementations are usually filtered out by access control.
+      // They're sometimes visible in contexts that can directly access storage,
+      // though, and there they should shadow the matching imported declaration.
+      if (firstDC != secondDC
+            && firstDC->getImplementedObjCContext() ==
+                 secondDC->getImplementedObjCContext()) {
+        if (isMemberImplementation(firstDecl) && secondDecl->hasClangNode()) {
+          shadowed.insert(secondDecl);
+          continue;
+        }
+        if (isMemberImplementation(secondDecl) && firstDecl->hasClangNode()) {
+          shadowed.insert(firstDecl);
           continue;
         }
       }
@@ -637,22 +666,6 @@ static void recordShadowedDeclsAfterTypeMatch(
 
       // Next, prefer any other module over the _StringProcessing module.
       if (auto spModule = ctx.getLoadedModule(ctx.Id_StringProcessing)) {
-        if ((firstModule == spModule) != (secondModule == spModule)) {
-          // If second module is _StringProcessing, then it is shadowed by
-          // first.
-          if (secondModule == spModule) {
-            shadowed.insert(secondDecl);
-            continue;
-          }
-
-          // Otherwise, the first declaration is shadowed by the second.
-          shadowed.insert(firstDecl);
-          break;
-        }
-      }
-
-      // Next, prefer any other module over the _Backtracing module.
-      if (auto spModule = ctx.getLoadedModule(ctx.Id_Backtracing)) {
         if ((firstModule == spModule) != (secondModule == spModule)) {
           // If second module is _StringProcessing, then it is shadowed by
           // first.
@@ -1790,7 +1803,7 @@ namelookup::isInMacroArgument(SourceFile *sourceFile, SourceLoc loc) {
 
         if (macro.getFreestanding()) {
           inMacroArgument = true;
-        } else if (auto *attr = macro.getAttr()) {
+        } else if (macro.getAttr()) {
           auto *moduleScope = sourceFile->getModuleScopeContext();
           auto results =
               lookupMacros(moduleScope, macro.getModuleName(),
@@ -1930,7 +1943,7 @@ PotentialMacroExpansions PotentialMacroExpansionsInContextRequest::evaluate(
           dc->getModuleScopeContext(), med->getMacroName(),
           MacroRole::Declaration, nameTracker);
     } else if (auto *vd = dyn_cast<ValueDecl>(member)) {
-      nameTracker.attachedTo = dyn_cast<ValueDecl>(member);
+      nameTracker.attachedTo = vd;
       forEachPotentialAttachedMacro(member, MacroRole::Peer, nameTracker);
     }
   }
@@ -2016,7 +2029,7 @@ populateLookupTableEntryFromMacroExpansions(ASTContext &ctx,
             dc->getModuleScopeContext(), med->getMacroName(),
             MacroRole::Declaration, nameTracker);
       } else if (auto *vd = dyn_cast<ValueDecl>(member)) {
-        nameTracker.attachedTo = dyn_cast<ValueDecl>(member);
+        nameTracker.attachedTo = vd;
         forEachPotentialAttachedMacro(member, MacroRole::Peer, nameTracker);
       }
 
@@ -2340,22 +2353,27 @@ ObjCCategoryNameMap ClassDecl::getObjCCategoryNameMap() {
                            ObjCCategoryNameMap());
 }
 
-static bool missingImportForMemberDecl(const DeclContext *dc, ValueDecl *decl) {
-  // Only require explicit imports for members when MemberImportVisibility is
-  // enabled.
-  auto &ctx = dc->getASTContext();
+/// Determines whether MemberImportVisiblity should be enforced for lookups in
+/// the given context.
+static bool shouldRequireImportsInContext(const DeclContext *lookupContext) {
+  auto &ctx = lookupContext->getASTContext();
   if (!ctx.LangOpts.hasFeature(Feature::MemberImportVisibility))
     return false;
 
-  return !dc->isDeclImported(decl);
+  // Code outside of the main module (which is often synthesized) isn't subject
+  // to MemberImportVisibility rules.
+  if (lookupContext->getParentModule() != ctx.MainModule)
+    return false;
+
+  return true;
 }
 
 /// Determine whether the given declaration is an acceptable lookup
 /// result when searching from the given DeclContext.
-static bool isAcceptableLookupResult(const DeclContext *dc,
-                                     NLOptions options,
+static bool isAcceptableLookupResult(const DeclContext *dc, NLOptions options,
                                      ValueDecl *decl,
-                                     bool onlyCompleteObjectInits) {
+                                     bool onlyCompleteObjectInits,
+                                     bool requireImport) {
   // Filter out designated initializers, if requested.
   if (onlyCompleteObjectInits) {
     if (auto ctor = dyn_cast<ConstructorDecl>(decl)) {
@@ -2383,10 +2401,9 @@ static bool isAcceptableLookupResult(const DeclContext *dc,
 
   // Check that there is some import in the originating context that makes this
   // decl visible.
-  if (!(options & NL_IgnoreMissingImports)) {
-    if (missingImportForMemberDecl(dc, decl))
+  if (requireImport && !(options & NL_IgnoreMissingImports))
+    if (!dc->isDeclImported(decl))
       return false;
-  }
 
   // Check that it has the appropriate ABI role.
   if (!ABIRoleInfo(decl).matchesOptions(options))
@@ -2620,6 +2637,9 @@ QualifiedLookupRequest::evaluate(Evaluator &eval, const DeclContext *DC,
   // Whether we only want to return complete object initializers.
   bool onlyCompleteObjectInits = false;
 
+  // Whether to enforce MemberImportVisibility import restrictions.
+  bool requireImport = shouldRequireImportsInContext(DC);
+
   // Visit all of the nominal types we know about, discovering any others
   // we need along the way.
   bool wantProtocolMembers = (options & NL_ProtocolMembers);
@@ -2654,7 +2674,8 @@ QualifiedLookupRequest::evaluate(Evaluator &eval, const DeclContext *DC,
       if ((options & NL_OnlyMacros) && !isa<MacroDecl>(decl))
         continue;
 
-      if (isAcceptableLookupResult(DC, options, decl, onlyCompleteObjectInits))
+      if (isAcceptableLookupResult(DC, options, decl, onlyCompleteObjectInits,
+                                   requireImport))
         decls.push_back(decl);
     }
 
@@ -2792,6 +2813,9 @@ AnyObjectLookupRequest::evaluate(Evaluator &evaluator, const DeclContext *dc,
                                              member.getFullName(), allDecls);
   }
 
+  /// Whether to enforce MemberImportVisibility import restrictions.
+  bool requireImport = shouldRequireImportsInContext(dc);
+
   // For each declaration whose context is not something we've
   // already visited above, add it to the list of declarations.
   llvm::SmallPtrSet<ValueDecl *, 4> knownDecls;
@@ -2824,7 +2848,8 @@ AnyObjectLookupRequest::evaluate(Evaluator &evaluator, const DeclContext *dc,
     // result, add it to the list.
     if (knownDecls.insert(decl).second &&
         isAcceptableLookupResult(dc, options, decl,
-                                 /*onlyCompleteObjectInits=*/false))
+                                 /*onlyCompleteObjectInits=*/false,
+                                 requireImport))
       decls.push_back(decl);
   }
 
@@ -3119,6 +3144,12 @@ directReferencesForTypeRepr(Evaluator &evaluator, ASTContext &ctx,
                                        attributed->getTypeRepr(), dc, options);
   }
 
+  case TypeReprKind::Isolated: {
+    auto isolated = cast<IsolatedTypeRepr>(typeRepr);
+    return directReferencesForTypeRepr(evaluator, ctx,
+                                       isolated->getBase(), dc, options);
+  }
+
   case TypeReprKind::Composition: {
     auto composition = cast<CompositionTypeRepr>(typeRepr);
     for (auto component : composition->getTypes()) {
@@ -3192,7 +3223,6 @@ directReferencesForTypeRepr(Evaluator &evaluator, ASTContext &ctx,
   case TypeReprKind::Error:
   case TypeReprKind::Function:
   case TypeReprKind::Ownership:
-  case TypeReprKind::Isolated:
   case TypeReprKind::CompileTimeConst:
   case TypeReprKind::Metatype:
   case TypeReprKind::Protocol:
@@ -3610,7 +3640,7 @@ CollectedOpaqueReprs swift::collectOpaqueTypeReprs(TypeRepr *r, ASTContext &ctx,
       if (!Ctx.LangOpts.hasFeature(Feature::ImplicitSome))
         return Action::Continue();
       
-      if (auto existential = dyn_cast<ExistentialTypeRepr>(repr)) {
+      if (isa<ExistentialTypeRepr>(repr)) {
         return Action::SkipNode();
       } else if (auto composition = dyn_cast<CompositionTypeRepr>(repr)) {
         if (!composition->isTypeReprAny())
@@ -3908,6 +3938,21 @@ CustomAttrNominalRequest::evaluate(Evaluator &evaluator,
   return nullptr;
 }
 
+/// Find the location of 'isolated' within this type representation.
+static SourceLoc findIsolatedLoc(TypeRepr *typeRepr) {
+  do {
+    if (auto isolatedTypeRepr = dyn_cast<IsolatedTypeRepr>(typeRepr))
+      return isolatedTypeRepr->getLoc();
+
+    if (auto attrTypeRepr = dyn_cast<AttributedTypeRepr>(typeRepr)) {
+      typeRepr = attrTypeRepr->getTypeRepr();
+      continue;
+    }
+        
+    return SourceLoc();
+  } while (true);
+}
+
 /// Decompose the ith inheritance clause entry to a list of type declarations,
 /// inverses, and optional AnyObject member.
 void swift::getDirectlyInheritedNominalTypeDecls(
@@ -3938,25 +3983,22 @@ void swift::getDirectlyInheritedNominalTypeDecls(
   // FIXME: This is a hack. We need cooperation from
   // InheritedDeclsReferencedRequest to make this work.
   SourceLoc loc;
-  SourceLoc uncheckedLoc;
-  SourceLoc preconcurrencyLoc;
-  SourceLoc unsafeLoc;
-  SourceRange safeRange;
+  ConformanceAttributes attributes;
   auto inheritedTypes = InheritedTypes(decl);
   bool isSuppressed = inheritedTypes.getEntry(i).isSuppressed();
   if (TypeRepr *typeRepr = inheritedTypes.getTypeRepr(i)) {
     loc = typeRepr->getLoc();
-    uncheckedLoc = typeRepr->findAttrLoc(TypeAttrKind::Unchecked);
-    preconcurrencyLoc = typeRepr->findAttrLoc(TypeAttrKind::Preconcurrency);
-    unsafeLoc = typeRepr->findAttrLoc(TypeAttrKind::Unsafe);
-    safeRange = typeRepr->findAttrLoc(TypeAttrKind::Safe);
+    attributes.uncheckedLoc = typeRepr->findAttrLoc(TypeAttrKind::Unchecked);
+    attributes.preconcurrencyLoc = typeRepr->findAttrLoc(TypeAttrKind::Preconcurrency);
+    attributes.unsafeLoc = typeRepr->findAttrLoc(TypeAttrKind::Unsafe);
+    
+    // Look for an IsolatedTypeRepr.
+    attributes.isolatedLoc = findIsolatedLoc(typeRepr);
   }
 
   // Form the result.
   for (auto nominal : nominalTypes) {
-    result.push_back(
-        {nominal, loc, uncheckedLoc, preconcurrencyLoc, unsafeLoc,
-          safeRange, isSuppressed});
+    result.push_back({nominal, loc, attributes, isSuppressed});
   }
 }
 
@@ -3986,10 +4028,11 @@ swift::getDirectlyInheritedNominalTypeDecls(
   for (auto attr :
        protoDecl->getAttrs().getAttributes<SynthesizedProtocolAttr>()) {
     auto loc = attr->getLocation();
+    ConformanceAttributes attributes;
+    if (attr->isUnchecked())
+      attributes.uncheckedLoc = loc;
     result.push_back(
-        {attr->getProtocol(), loc, attr->isUnchecked() ? loc : SourceLoc(),
-         /*preconcurrencyLoc=*/SourceLoc(), SourceLoc(), SourceLoc(),
-         /*isSuppressed=*/false});
+        {attr->getProtocol(), loc, attributes, /*isSuppressed=*/false});
   }
 
   // Else we have access to this information on the where clause.
@@ -4000,8 +4043,7 @@ swift::getDirectlyInheritedNominalTypeDecls(
   // FIXME: Refactor SelfBoundsFromWhereClauseRequest to dig out
   // the source location.
   for (auto inheritedNominal : selfBounds.decls)
-    result.emplace_back(inheritedNominal, SourceLoc(), SourceLoc(),
-                        SourceLoc(), SourceLoc(), SourceLoc(),
+    result.emplace_back(inheritedNominal, SourceLoc(), ConformanceAttributes(),
                         /*isSuppressed=*/false);
 
   return result;
